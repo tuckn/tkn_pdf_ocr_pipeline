@@ -1,0 +1,22 @@
+schema_version: "2.0.0"
+
+# Paths use the working directory; ~ expands to the user home.
+input_dir: null
+output_dir: null
+state_dir: ~/.tkn/pdf_ocr_pipeline/state
+recursive: false
+min_age_seconds: 30
+max_pages: 2000
+max_file_mb: 500
+
+azure:
+  endpoint: null  # https://<resource-name>.cognitiveservices.azure.com
+  auth_mode: browser  # browser, default_credential, key
+  tenant_id: null  # Optional Entra tenant ID/domain for browser sign-in.
+  key_env: AZURE_DOCUMENT_INTELLIGENCE_KEY
+  api_version: "2024-11-30"
+  locale: null  # Automatic language detection; optionally ja.
+  request_timeout_seconds: 60
+  poll_interval_seconds: 2
+  poll_timeout_seconds: 600
+  max_get_retries: 3

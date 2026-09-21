@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tkn-pdf-ocr-pipeline"
+version = "0.3.0"
+description = "Resumable Azure Document Intelligence searchable-PDF CLI."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+  "azure-identity>=1.25,<2", "httpx>=0.28.1,<1", "PyYAML>=6.0.2,<7",
+  "pypdf>=6.19,<7", "filelock>=3.18,<4",
+]
+
+[project.scripts]
+tkn-pdf-ocr = "pdf_ocr_pipeline.cli:main"
+
+[dependency-groups]
+dev = ["pypdfium2>=4.30,<6", "Pillow>=11,<13", "pytest>=8.3,<10", "ruff>=0.11,<1", "mypy>=1.15,<2", "types-PyYAML>=6,<7"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pdf_ocr_pipeline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["pypdfium2", "pypdfium2.*"]
+ignore_missing_imports = true
