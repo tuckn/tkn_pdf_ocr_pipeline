@@ -2,9 +2,6 @@
 
 [日本語](README_ja.md)
 
-See the [Changelog](CHANGELOG.md) for version changes and
-[OCR validation](docs/validation.md) for validation evidence and limitations.
-
 Turn scanned PDF files into searchable PDFs with **Azure Document Intelligence Read**
 (`prebuilt-read`). Run on a Windows PC and deliver validated PDFs from multiple
 input queues to separate output folders. Keep inputs by default, or delete them after
@@ -358,6 +355,9 @@ uv run ruff format --check .
 uv run mypy src
 uv build
 ```
+
+See the [Changelog](CHANGELOG.md) for version changes and
+[OCR validation](docs/validation.md) for validation evidence and limitations.
 
 Tests use synthetic PDFs and mock Azure HTTP responses; they do not send private
 documents or make billable requests. The initial Windows implementation was checked

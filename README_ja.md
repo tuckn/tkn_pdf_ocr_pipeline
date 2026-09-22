@@ -2,8 +2,6 @@
 
 [English](README.md)
 
-バージョンごとの追加・変更は[変更履歴](CHANGELOG.md)、検証方法・結果・確認範囲は[検証記録](docs/validation.md)を参照してください。
-
 画像として保存されたPDFの文字をOCRで認識し、検索・コピーできるPDFを作成するコマンドラインツールです。
 例えば、文字を選択できなかった書類で、文中の語句を検索したり、文章をコピーしたりできるようになります。
 
@@ -453,6 +451,8 @@ uv run ruff format --check .
 uv run mypy src
 uv build
 ```
+
+バージョンごとの追加・変更は[変更履歴](CHANGELOG.md)、検証方法・結果・確認範囲は[検証記録](docs/validation.md)を参照してください。
 
 テストは合成PDFとAzureの応答を模したデータを使います。
 日本語PDFを使った実OCRの確認範囲と結果は[検証記録](docs/validation.md)を参照してください。
