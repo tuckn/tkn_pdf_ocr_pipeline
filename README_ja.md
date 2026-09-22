@@ -2,6 +2,8 @@
 
 [English](README.md)
 
+バージョンごとの追加・変更は[変更履歴](CHANGELOG.md)、検証方法・結果・確認範囲は[検証記録](docs/validation.md)を参照してください。
+
 画像として保存されたPDFの文字をOCRで認識し、検索・コピーできるPDFを作成するコマンドラインツールです。
 例えば、文字を選択できなかった書類で、文中の語句を検索したり、文章をコピーしたりできるようになります。
 
@@ -16,6 +18,72 @@ Wordなどから出力された通常の文字があるページは、OCRせず�
 複数の入力フォルダから、検証済みのPDFをそれぞれの出力フォルダへ保存できます。
 入力PDFは既定で保持し、対象ごとに `after_success: delete` を指定すると、保存・検証・処理記録の保存後に削除します。
 構造化データの抽出、発行日に基づくリネーム、最終保管先への移動は後段の処理で行います。
+
+## 処理の流れ
+
+`tkn-pdf-ocr run` でフォルダを処理するときの流れです。図の保存・削除は、各段階の検証が成功した場合に進みます。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CLI as tkn-pdf-ocr（PC）
+    participant Input as 入力フォルダ
+    participant State as 処理記録（PC）
+    participant Azure as Azure Document Intelligence
+    participant Output as 出力フォルダ
+
+    Note over CLI,Output: run を実行（手動またはタスクスケジューラ）
+    CLI->>CLI: 設定とフォルダの組み合わせを確認
+    CLI->>Input: 対象のPDFを列挙
+    loop PDFごとに処理
+        CLI->>Input: PDFを読み込み、変更途中でないか確認
+        CLI->>CLI: ページを分類し、OCR対象を判定
+        CLI->>State: 過去の処理・引き渡し状況を確認
+        alt dry-run
+            CLI->>CLI: OCR・保存・入力削除の予定を表示
+            Note over CLI,Output: 認証・Azure送信・書き込み・削除は行わない
+        else 引き渡し完了済み（追加の後処理なし）
+            CLI->>CLI: unchanged として処理を省略
+            Note over State,Output: 後段で出力が移動されても再作成しない
+        else 新しく引き渡すPDF
+            alt OCRが必要
+                CLI->>CLI: 対象ページだけの送信用PDFを作成
+                CLI->>CLI: 認証（必要ならブラウザでログイン）
+                CLI->>State: 送信予定を記録
+                CLI->>Azure: 対象ページを送信してOCRを依頼
+                Azure-->>CLI: 処理の受付情報
+                CLI->>State: 再開に使う受付情報を保存
+                loop OCRが完了するまで
+                    CLI->>Azure: 処理状況を確認
+                    Azure-->>CLI: 処理状況を返す
+                end
+                CLI->>Azure: 検索可能PDFを取得
+                Azure-->>CLI: OCR結果のPDF
+                CLI->>CLI: 非表示の文字情報を元PDFへ合成
+                Note over CLI: 元画像を再描画・再圧縮せず保持
+            else OCR不要の検索可能PDF
+                CLI->>CLI: 元PDFをそのまま出力候補にする
+            end
+            CLI->>CLI: 出力候補と元PDFの整合性を検証
+            CLI->>State: 引き渡し予定を記録
+            CLI->>Output: PDFを保存し、保存内容を再確認
+            CLI->>State: 保存・検証済みとして記録
+            alt after_success が delete
+                CLI->>CLI: 入力・出力が変わっていないか再確認
+                CLI->>Input: 元PDFを削除
+            else after_success が keep（既定）
+                Note over CLI,Input: 元PDFを保持
+            end
+            CLI->>State: 引き渡し完了を記録
+        end
+    end
+    CLI->>State: 実行結果を保存（通常実行のみ）
+    CLI->>CLI: 件数と各PDFの処理結果を表示
+```
+
+判定できないPDFや、OCR対象ページから文字を取得できなかったPDFは、確認が必要な結果として入力を保持し、新しい出力を保存しません。
+図では中断・エラーからの復旧を省略しています。再実行時は保存済みの受付情報からOCRを再開し、入力削除だけが残っている場合はOCRせず削除を再試行します。
+詳しくは[処理仕様](docs/reference/processing.md#recovery-and-state)を参照してください。
 
 ## 利用前に確認すること
 
@@ -279,16 +347,16 @@ PCの電源が入り、スリープしていない間に実行できます。
 進捗やエラーはコンソールの標準エラーへ、最終結果は標準出力へJSONで表示します。
 `run` と `convert` の結果には、次の件数が含まれます。
 
-| 項目          | 意味                                                                          |
-| ------------- | ----------------------------------------------------------------------------- |
-| `created`   | 新しく保存したPDF。                                                           |
-| `replaced`  | バックアップ後に置き換えたPDF。                                               |
-| `unchanged` | 完了済みの内容と一致し、再処理しなかったPDF。                                 |
-| `skipped`   | 条件により処理を見送ったPDF。`files` 内の `reason` で理由を確認できます。 |
-| `planned`   | `--dry-run` で処理予定になったPDF。                                         |
-| `failed`    | 処理に失敗したPDF。`files` 内の `error` で原因を確認できます。 |
-| `needs_review` | 検証や引き渡し状態の確認が必要なPDF。入力は保持します。 |
-| `cleanup_pending` | 出力保存後、入力の削除だけが未完了のPDF。 |
+| 項目                | 意味                                                                          |
+| ------------------- | ----------------------------------------------------------------------------- |
+| `created`         | 新しく保存したPDF。                                                           |
+| `replaced`        | バックアップ後に置き換えたPDF。                                               |
+| `unchanged`       | 完了済みの内容と一致し、再処理しなかったPDF。                                 |
+| `skipped`         | 条件により処理を見送ったPDF。`files` 内の `reason` で理由を確認できます。 |
+| `planned`         | `--dry-run` で処理予定になったPDF。                                         |
+| `failed`          | 処理に失敗したPDF。`files` 内の `error` で原因を確認できます。            |
+| `needs_review`    | 検証や引き渡し状態の確認が必要なPDF。入力は保持します。                       |
+| `cleanup_pending` | 出力保存後、入力の削除だけが未完了のPDF。                                     |
 
 `skipped` の理由が `no_eligible_pages` ならOCR対象ページがありません。`page_kinds` にページ順の判定（`scan`、`ocr_text`、`native_text`、`no_scan_image`、`unsupported`）、`ocr_pages` にOCR対象のページ番号が表示されます。`input_not_stable_yet` は最終更新からの待機時間を満たしていない場合です。
 `sources` に対象ごとの件数、`files` に `source_id` と個別結果が表示されます。
@@ -358,9 +426,9 @@ OCR後、保存前にCLIがPDFを読み取り、元PDFとのページ数・ペ�
 複数のCLIから同時に使う場合は、同じ `state_dir` を使用します。
 保存先には、ハードリンクとファイルの原子的な置換に対応したローカルファイルシステムが必要です。他のアプリによる同時編集を完全に防ぐことはできません。
 
-## 更新する
+## CLIを更新する
 
-リポジトリを更新した後、再インストールして変更を反映します。
+リポジトリを更新した後、以下の操作で再インストールして変更を反映します。
 
 ```powershell
 cd "C:\path\to\tkn_pdf_ocr_pipeline"

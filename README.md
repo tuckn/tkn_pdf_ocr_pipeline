@@ -2,6 +2,9 @@
 
 [日本語](README_ja.md)
 
+See the [Changelog](CHANGELOG.md) for version changes and
+[OCR validation](docs/validation.md) for validation evidence and limitations.
+
 Turn scanned PDF files into searchable PDFs with **Azure Document Intelligence Read**
 (`prebuilt-read`). Run on a Windows PC and deliver validated PDFs from multiple
 input queues to separate output folders. Keep inputs by default, or delete them after
@@ -24,16 +27,75 @@ generation itself has no additional charge according to the
 [Read documentation](https://learn.microsoft.com/en-us/azure/ai-services/document-intelligence/prebuilt/read?view=doc-intel-4.0.0#searchable-pdfs).
 `--dry-run` only reads local files and settings: no authentication, network, OCR, or writes.
 
-The data flow is:
+## Processing flow
+
+This diagram shows folder processing with `tkn-pdf-ocr run`. Saving and deletion
+proceed only after the checks at each stage succeed.
 
 ```mermaid
-flowchart LR
-    A["Original PDF"] --> B["Classify each page; select scans"]
-    B --> C["Azure prebuilt-read"]
-    C --> D["Graft invisible text onto original pages; validate images"]
-    D --> E["Separate output folder"]
-    C --> F["Local job state for resuming"]
+sequenceDiagram
+    autonumber
+    participant CLI as tkn-pdf-ocr (PC)
+    participant Input as Input folder
+    participant State as Processing records (PC)
+    participant Azure as Azure Document Intelligence
+    participant Output as Output folder
+
+    Note over CLI,Output: Execute run manually or through Task Scheduler
+    CLI->>CLI: Validate settings and folder relationships
+    CLI->>Input: List eligible PDF files
+    loop For each PDF
+        CLI->>Input: Read PDF and check for concurrent changes
+        CLI->>CLI: Classify pages and select OCR targets
+        CLI->>State: Check previous processing and delivery status
+        alt dry-run
+            CLI->>CLI: Show planned OCR, saving and input deletion
+            Note over CLI,Output: No authentication, Azure requests, writes or deletion
+        else Delivery completed with no pending cleanup
+            CLI->>CLI: Skip processing as unchanged
+            Note over State,Output: Do not recreate output moved downstream
+        else New PDF delivery
+            alt OCR required
+                CLI->>CLI: Prepare upload PDF with selected pages only
+                CLI->>CLI: Authenticate, using browser sign-in if needed
+                CLI->>State: Record submission intent
+                CLI->>Azure: Submit selected pages for OCR
+                Azure-->>CLI: Accepted operation details
+                CLI->>State: Save operation details for resumption
+                loop Until OCR completes
+                    CLI->>Azure: Check operation status
+                    Azure-->>CLI: Return operation status
+                end
+                CLI->>Azure: Download searchable PDF
+                Azure-->>CLI: OCR result PDF
+                CLI->>CLI: Compose invisible text onto original PDF
+                Note over CLI: Preserve original images without rendering or recompression
+            else Searchable PDF requiring no OCR
+                CLI->>CLI: Use original PDF bytes as output candidate
+            end
+            CLI->>CLI: Validate output candidate and source consistency
+            CLI->>State: Record delivery intent
+            CLI->>Output: Save PDF and verify saved contents
+            CLI->>State: Record successful saving and verification
+            alt after_success is delete
+                CLI->>CLI: Recheck input and output for changes
+                CLI->>Input: Delete original PDF
+            else after_success is keep (default)
+                Note over CLI,Input: Retain original PDF
+            end
+            CLI->>State: Record completed delivery
+        end
+    end
+    CLI->>State: Save run report (normal execution only)
+    CLI->>CLI: Display counts and per-file results
 ```
+
+PDFs that cannot be classified safely, or whose selected OCR pages yield no text,
+are held for review: inputs are retained and no new output is published.
+Recovery from interruptions and errors is omitted from the diagram. On rerun,
+saved operation details allow OCR to resume; when only input deletion remains,
+the CLI retries deletion without OCR.
+See [recovery and state](docs/reference/processing.md#recovery-and-state) for details.
 
 ## Setup
 
