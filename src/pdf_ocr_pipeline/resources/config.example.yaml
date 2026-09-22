@@ -1,13 +1,35 @@
-schema_version: "2.0.0"
+schema_version: "3.0.0"
 
-# Paths use the working directory; ~ expands to the user home.
-input_dir: null
-output_dir: null
 state_dir: ~/.tkn/pdf_ocr_pipeline/state
-recursive: false
 min_age_seconds: 30
 max_pages: 2000
 max_file_mb: 500
+
+# Paths use the working directory; ~ expands to the user home.
+# When no sources are configured, the implicit source "default" uses:
+#   input_dir: ~/.tkn/pdf_ocr_pipeline/data/incoming
+#   output_dir: ~/.tkn/pdf_ocr_pipeline/data/searchable
+#   recursive: false, after_success: keep, output_suffix: ""
+# Define sources below to use only your configured queues (no extra default queue).
+# Replace sources: {} with the commented mapping below to customize queues.
+# IDs are stable lowercase ASCII names; do not rename active queues.
+# Omitted after_success keeps input; output_suffix defaults to an empty string.
+sources: {}
+# sources:
+#   receipts:
+#     enabled: true
+#     recursive: false
+#     input_dir: C:/path/to/receipts/1_rawPDF
+#     output_dir: C:/path/to/receipts/2_ocrPDF
+#     after_success: delete
+#     output_suffix: "_ocr"
+#   catalogs:
+#     enabled: false
+#     recursive: true
+#     input_dir: C:/path/to/catalogs/1_rawPDF
+#     output_dir: C:/path/to/catalogs/2_ocrPDF
+#     after_success: keep
+#     output_suffix: "_ocr"
 
 azure:
   endpoint: null  # https://<resource-name>.cognitiveservices.azure.com

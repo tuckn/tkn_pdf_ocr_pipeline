@@ -179,7 +179,7 @@ def test_login_dry_run_and_config_show_do_not_touch_auth(browser_config, monkeyp
     )
     path = Path.cwd() / ".tkn/config.yaml"
     path.parent.mkdir()
-    path.write_text('schema_version: "2.0.0"\nazure:\n  endpoint: https://example.com\n')
+    path.write_text('schema_version: "3.0.0"\nazure:\n  endpoint: https://example.com\n')
     before = sorted(Path.cwd().rglob("*"))
     assert main(["auth", "login", "--dry-run"]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "planned"
@@ -192,7 +192,7 @@ def test_login_reauthenticate_without_pdf_requests(browser_config, monkeypatch, 
     _, instances, _, _ = install_browser(monkeypatch)
     path = Path.cwd() / ".tkn/config.yaml"
     path.parent.mkdir()
-    path.write_text('schema_version: "2.0.0"\nazure:\n  endpoint: https://example.com\n')
+    path.write_text('schema_version: "3.0.0"\nazure:\n  endpoint: https://example.com\n')
     for args in (["auth", "login"], ["auth", "login"], ["auth", "login", "--reauthenticate"]):
         assert main(args) == 0
         result = json.loads(capsys.readouterr().out)

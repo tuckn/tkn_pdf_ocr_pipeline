@@ -12,7 +12,7 @@ from .config import SCHEMA_VERSION, init_config, resolve_config, user_config_pat
 from .errors import OcrError
 from .logging_config import configure_logging, log_success
 from .pdf import inspect_pdf
-from .pipeline import Options, discover, run
+from .pipeline import Options, run, run_sources
 
 
 class Parser(argparse.ArgumentParser):
@@ -46,7 +46,6 @@ def _common(parser: argparse.ArgumentParser) -> None:
 
 def _ocr_options(parser: argparse.ArgumentParser) -> None:
     _common(parser)
-    parser.add_argument("--output-dir", help="Output folder; required if not configured")
     parser.add_argument("--state-dir", help="Persistent job/lock directory")
     parser.add_argument(
         "--redo-ocr",
@@ -68,7 +67,7 @@ def _ocr_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Read/validate locally only; no auth, network, writes, or OCR",
+        help="Read/validate locally only; no auth, network, writes, deletion, or OCR",
     )
     parser.add_argument(
         "--overwrite",
@@ -78,7 +77,7 @@ def _ocr_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--retry-uncertain",
         action="store_true",
-        help="Resubmit an uncertain/expired job; may incur another Azure charge",
+        help="Resubmit an uncertain/expired/review OCR job; never override handoff review",
     )
 
 
@@ -114,16 +113,12 @@ def parser() -> Parser:
     convert = commands.add_parser("convert", help="Upload one PDF and save its searchable copy")
     _ocr_options(convert)
     convert.add_argument("input", type=Path)
-    convert.add_argument("--output", type=Path, help="Exact destination .pdf path")
-    batch = commands.add_parser("run", help="Process a folder once; suitable for Task Scheduler")
-    _ocr_options(batch)
-    batch.add_argument("--input-dir", help="Input folder; required if not configured")
-    batch.add_argument(
-        "--recursive",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Include subfolders and preserve relative paths (default false)",
+    convert.add_argument("--output", type=Path, required=True, help="Exact destination .pdf path")
+    batch = commands.add_parser(
+        "run", help="Process enabled queues once; suitable for Task Scheduler"
     )
+    _ocr_options(batch)
+    batch.add_argument("--source", help="Process only this enabled source ID")
     verify = commands.add_parser(
         "verify", help="Inspect PDF page count and extractable text locally"
     )
@@ -141,10 +136,7 @@ def parser() -> Parser:
 def _overrides(args: argparse.Namespace) -> dict[str, Any]:
     values: dict[str, Any] = {}
     for key in (
-        "input_dir",
-        "output_dir",
         "state_dir",
-        "recursive",
         "min_age_seconds",
     ):
         value = getattr(args, key, None)
@@ -202,19 +194,10 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             finally:
                 credential.close()
         return result
-    if args.command == "convert":
-        if args.output:
-            output = args.output
-        elif config.output_dir:
-            output = config.output_dir / args.input.name
-        else:
-            raise OcrError("Specify --output or configure output_dir")
-        pairs = [(args.input, output)]
-    else:
-        pairs = discover(config)
-    return run(
-        pairs, config, Options(args.dry_run, args.overwrite, args.retry_uncertain, args.redo_ocr)
-    )
+    options = Options(args.dry_run, args.overwrite, args.retry_uncertain, args.redo_ocr)
+    if args.command == "run":
+        return run_sources(config, options, args.source)
+    return run([(args.input, args.output)], config, options)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -231,10 +214,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         logger.debug("Dispatching %s", args.command)
         result = execute(args)
-        failed = result.get("counts", {}).get("failed", 0)
+        counts = result.get("counts", {})
+        failed = sum(counts.get(key, 0) for key in ("failed", "needs_review", "cleanup_pending"))
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if failed:
-            logger.error("Finished with %s failed file(s)", failed)
+            logger.error("Finished with %s file(s) requiring attention", failed)
             return 1
         log_success(logger, "Completed %s", args.command)
         return 0

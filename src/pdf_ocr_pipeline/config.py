@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -14,7 +14,19 @@ from .errors import OcrError
 from .io_utils import atomic_write, backup, file_hash
 
 APPLICATION_ID = "pdf_ocr_pipeline"
-SCHEMA_VERSION = "2.0.0"
+SCHEMA_VERSION = "3.0.0"
+SOURCE_DEFAULTS: dict[str, Any] = {
+    "enabled": True,
+    "recursive": False,
+    "input_dir": None,
+    "output_dir": None,
+    "after_success": "keep",
+    "output_suffix": "",
+}
+DEFAULT_SOURCE_PATHS = {
+    "input_dir": "~/.tkn/pdf_ocr_pipeline/data/incoming",
+    "output_dir": "~/.tkn/pdf_ocr_pipeline/data/searchable",
+}
 VERSION_PATTERN = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
 
 
@@ -37,15 +49,30 @@ class AzureConfig:
 
 
 @dataclass(frozen=True)
-class Config:
+class SourceConfig:
+    enabled: bool
     input_dir: Path | None
     output_dir: Path | None
+    after_success: str = "keep"
+    output_suffix: str = ""
+    recursive: bool = False
+
+
+@dataclass(frozen=True)
+class Config:
     state_dir: Path
-    recursive: bool
     min_age_seconds: int
     max_pages: int
     max_file_mb: int
     azure: AzureConfig
+    sources: dict[str, SourceConfig] = field(default_factory=dict)
+    # Derived context for a selected source; these are not top-level settings.
+    input_dir: Path | None = None
+    output_dir: Path | None = None
+    source_id: str | None = None
+    after_success: str = "keep"
+    output_suffix: str = ""
+    recursive: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,11 +89,24 @@ def user_config_path() -> Path:
 
 def _validate(mapping: dict[str, Any], template: dict[str, Any], source: str) -> None:
     for key, value in mapping.items():
-        if key in {"existing_text", "redo_dpi"}:
-            raise OcrError(
-                f"{source}.{key} was removed in 0.3.0; remove this setting. "
-                "Pages are classified automatically; use --redo-ocr to replace invisible OCR text."
-            )
+        if key == "sources" and key in template:
+            if not isinstance(value, dict):
+                raise OcrError(f"{source}.sources must be a mapping")
+            seen: set[str] = set()
+            for source_id, settings in value.items():
+                if (
+                    not isinstance(source_id, str)
+                    or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", source_id)
+                    or source_id in {"con", "prn", "aux", "nul"}
+                    or re.fullmatch(r"(?:com|lpt)[1-9]", source_id)
+                    or source_id.casefold() in seen
+                ):
+                    raise OcrError(f"{source}.sources: invalid or duplicate source ID")
+                seen.add(source_id.casefold())
+                if not isinstance(settings, dict):
+                    raise OcrError(f"{source}.sources.{source_id} must be a mapping")
+                _validate(settings, SOURCE_DEFAULTS, f"{source}.sources.{source_id}")
+            continue
         if key not in template:
             raise OcrError(f"Unknown config key {source}.{key}")
         expected = template[key]
@@ -79,7 +119,7 @@ def _validate(mapping: dict[str, Any], template: dict[str, Any], source: str) ->
                 raise OcrError(f"{source}.{key} must be a nonempty string or null")
         elif type(value) is not type(expected):
             raise OcrError(f"Wrong type for {source}.{key}; expected {type(expected).__name__}")
-        elif isinstance(value, str) and not value.strip():
+        elif isinstance(value, str) and not value.strip() and key != "output_suffix":
             raise OcrError(f"{source}.{key} cannot be empty")
         elif type(value) is int and value < 0:
             raise OcrError(f"{source}.{key} cannot be negative")
@@ -90,12 +130,8 @@ def _version(value: Any, source: str) -> None:
     if not match:
         raise OcrError(f'{source}: schema_version is required as "MAJOR.MINOR.PATCH"')
     major, minor, _patch = map(int, match.groups())
-    if major != 2 or minor > 0:
-        raise OcrError(
-            f"{source}: unsupported schema_version {value}; supported 2.0.x. "
-            "For 1.0.x, remove existing_text/redo_dpi, set schema_version to 2.0.0, "
-            "and use --redo-ocr explicitly when replacing OCR text."
-        )
+    if major != 3 or minor != 0:
+        raise OcrError(f"{source}: unsupported schema_version {value}; supported 3.0.x")
 
 
 def _merge(
@@ -108,6 +144,10 @@ def _merge(
     for key, value in update.items():
         dotted = prefix + key
         if isinstance(value, dict):
+            if key not in target:
+                target[key] = {}
+                if prefix == "sources.":
+                    _merge(target[key], SOURCE_DEFAULTS, winners, "built-in", dotted + ".")
             _merge(target[key], value, winners, source, dotted + ".")
         else:
             target[key] = value
@@ -157,27 +197,40 @@ def resolve_config(
     if overrides:
         _validate(overrides, defaults, "CLI")
         _merge(values, overrides, winners, "CLI")
+    if not values["sources"]:
+        # Resolve the fallback after every layer, so explicit queues never inherit it.
+        _merge(values, {"sources": {"default": DEFAULT_SOURCE_PATHS}}, winners, "built-in")
     _semantic(values)
-    for key in ("input_dir", "output_dir", "state_dir"):
-        if values[key] is not None:
-            values[key] = str(_path(values[key], cwd))
+    values["state_dir"] = str(_path(values["state_dir"], cwd))
     if values["azure"]["endpoint"]:
         values["azure"]["endpoint"] = values["azure"]["endpoint"].rstrip("/")
+    queue_configs: dict[str, SourceConfig] = {}
+    for source_id, settings in values["sources"].items():
+        for key in ("input_dir", "output_dir"):
+            if settings[key] is not None:
+                settings[key] = str(_path(settings[key], cwd))
+        queue_configs[source_id] = SourceConfig(
+            **{k: v for k, v in settings.items() if k not in {"input_dir", "output_dir"}},
+            input_dir=Path(settings["input_dir"]) if settings["input_dir"] else None,
+            output_dir=Path(settings["output_dir"]) if settings["output_dir"] else None,
+        )
     config = Config(
-        **{
-            k: v
-            for k, v in values.items()
-            if k not in {"azure", "input_dir", "output_dir", "state_dir"}
-        },
-        input_dir=Path(values["input_dir"]) if values["input_dir"] else None,
-        output_dir=Path(values["output_dir"]) if values["output_dir"] else None,
+        **{k: v for k, v in values.items() if k not in {"azure", "state_dir", "sources"}},
         state_dir=Path(values["state_dir"]),
         azure=AzureConfig(**values["azure"]),
+        sources=queue_configs,
     )
     return ResolvedConfig(config, values, sources, winners)
 
 
 def _semantic(values: dict[str, Any]) -> None:
+    for source_id, settings in values["sources"].items():
+        if settings["after_success"] not in {"keep", "delete"}:
+            raise OcrError(f"sources.{source_id}.after_success must be keep or delete")
+        suffix = settings["output_suffix"]
+        if any(c in suffix for c in '<>:"/\\|?*') or any(ord(c) < 32 for c in suffix):
+            raise OcrError(f"sources.{source_id}.output_suffix must be a filename suffix")
+    # Required queue paths are checked after merging, allowing partial overlays.
     if not 1 <= values["max_pages"] <= 2000 or not 1 <= values["max_file_mb"] <= 500:
         raise OcrError("max_pages must be 1..2000 and max_file_mb 1..500")
     azure = values["azure"]

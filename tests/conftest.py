@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from io import BytesIO
 
 import pytest
@@ -81,10 +82,8 @@ def isolated_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def config(tmp_path):
-    return resolve_config(
+    resolved = resolve_config(
         overrides={
-            "input_dir": str(tmp_path / "input"),
-            "output_dir": str(tmp_path / "output"),
             "state_dir": str(tmp_path / "state"),
             "min_age_seconds": 0,
             "azure": {
@@ -94,6 +93,7 @@ def config(tmp_path):
             },
         }
     ).config
+    return replace(resolved, input_dir=tmp_path / "input", output_dir=tmp_path / "output")
 
 
 class FakeProvider:

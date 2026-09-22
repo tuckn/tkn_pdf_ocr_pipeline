@@ -3,8 +3,9 @@
 [日本語](README_ja.md)
 
 Turn scanned PDF files into searchable PDFs with **Azure Document Intelligence Read**
-(`prebuilt-read`). Run on a Windows PC, save results in a separate folder, and keep
-the original PDFs. No Tesseract, OCRmyPDF, language packs, WSL, or Power Platform is required.
+(`prebuilt-read`). Run on a Windows PC and deliver validated PDFs from multiple
+input queues to separate output folders. Keep inputs by default, or delete them after
+verified delivery with `after_success: delete`. No Tesseract, OCRmyPDF, language packs, WSL, or Power Platform is required.
 
 For example, `input/receipt.pdf` becomes `output/receipt.pdf`, with text you can search
 and copy. A normal result contains the following fields (illustrative excerpt):
@@ -16,7 +17,7 @@ and copy. A normal result contains the following fields (illustrative excerpt):
 Start with setup and the first conversion below. The [command table](#commands) and
 [processing contract](docs/reference/processing.md) cover repeat runs and recovery.
 
-The CLI processes one PDF or scans a folder once. Windows Task Scheduler supplies
+The CLI processes one PDF or scans configured folders once. Windows Task Scheduler supplies
 the recurring schedule; the CLI does not install a background service.
 Normal OCR sends the PDF to Azure and incurs Read analysis charges. Searchable PDF
 generation itself has no additional charge according to the
@@ -54,20 +55,47 @@ tkn-pdf-ocr config show
 
 `config init` prints the configuration file's absolute path, normally
 `~/.tkn/pdf_ocr_pipeline/config.yaml`.
-Edit that file. Set `input_dir`, `output_dir`, and `azure.endpoint`.
+Edit that file and set `azure.endpoint`. If no sources are configured (omitted or `{}`
+after merging), the built-in `default` source uses:
+
+- Input: `~/.tkn/pdf_ocr_pipeline/data/incoming`
+- Output: `~/.tkn/pdf_ocr_pipeline/data/searchable`
+
+Create the input folder and place PDFs there. Outputs are created during processing;
+configuration inspection and dry-run never create these folders. The default source keeps
+input files, does not recurse, and preserves filenames. `run --source default` selects it.
+Defining your own sources uses only those sources, without adding the implicit default.
+For custom folders, define named `sources` as below.
 Here is a complete minimal configuration; replace both folders and the resource name:
 
 ```yaml
-schema_version: "2.0.0"
-input_dir: C:\path\to\incoming-pdf
-output_dir: C:\path\to\searchable-pdf
+schema_version: "3.0.0"
+sources:
+  receipts:
+    enabled: true
+    recursive: false
+    input_dir: C:/path/to/receipts/1_rawPDF
+    output_dir: C:/path/to/receipts/2_ocrPDF
+    after_success: delete
+    output_suffix: "_ocr"
+  catalogs:
+    enabled: false
+    recursive: true
+    input_dir: C:/path/to/catalogs/1_rawPDF
+    output_dir: C:/path/to/catalogs/2_ocrPDF
+    after_success: keep
+    output_suffix: "_ocr"
 azure:
   endpoint: https://<resource-name>.cognitiveservices.azure.com
   auth_mode: browser
 ```
 
-Use separate, non-nested input and output folders to prevent output reprocessing and
-source overwrites. The default authentication opens your web browser when sign-in is
+The receipts example deletes input files after verified delivery. Use `keep` to retain
+inputs; omission also means `keep`. Enable additional sources when their folders are ready.
+Define input/output folders only under `sources.<id>`. Top-level folder settings are not accepted.
+All enabled input/output folders and the state folder must be separate and non-nested,
+including across different sources. Deletion is a filesystem deletion, not a recycle-bin move.
+This CLI verifies local saved bytes; it does not confirm OneDrive cloud synchronization. The default authentication opens your web browser when sign-in is
 needed; Azure CLI is not required. Sign in without uploading a PDF:
 
 ```powershell
@@ -97,11 +125,12 @@ Preview a folder run, then perform it:
 ```powershell
 tkn-pdf-ocr run --dry-run
 tkn-pdf-ocr run
-tkn-pdf-ocr verify "C:\path\to\searchable-pdf\receipt.pdf" --require-text
+tkn-pdf-ocr verify "C:\path\to\receipts\2_ocrPDF\receipt_ocr.pdf" --require-text
 ```
 
-The real run uploads eligible PDFs, saves validated PDFs with their original filenames,
-and prints a JSON summary. `failed: 0` means no file failed; inspect `skipped` reasons
+The real run uploads eligible PDFs, saves validated PDFs with the configured suffix,
+applies each source's retention policy, and prints a JSON summary. Check `failed`,
+`needs_review`, and `cleanup_pending`; inspect `skipped` reasons
 when no output appears. Open the result in a PDF viewer and search for known Japanese
 store names, dates, or amounts. `verify` checks structural readability and extractable
 text; it does not judge recognition accuracy.
@@ -112,13 +141,20 @@ To select one file without configuring input/output folders:
 tkn-pdf-ocr convert "C:\path\to\scan.pdf" --output "C:\path\to\result.pdf"
 ```
 
-Endpoint and authentication settings still apply. The source is never overwritten.
+`--output` is required. Endpoint and authentication settings still apply. The source is never overwritten.
 
 ## Daily use
 
-Run `tkn-pdf-ocr run` again to process new files. Matching source, processing settings,
-and output hashes return `unchanged` without another Azure submission.
-`--recursive` includes subfolders and preserves their relative paths.
+Run `tkn-pdf-ocr run` to process all enabled sources, or `run --source receipts` for one.
+`run --source receipts --dry-run` previews the target and planned input deletion without
+Azure requests, file writes, or deletions. Settings and limits outside `sources` are shared.
+Named queues remember completed delivery even after the downstream consumer moves the
+output. Changing OCR settings or the suffix does not redeliver the same input path/content.
+Keep source IDs and `state_dir` stable. To deliberately OCR a retained file again, use
+`convert` with an explicit destination and, if needed, `--redo-ocr`.
+Single-file `convert` uses source/settings/output hashes for deduplication.
+Set `sources.<id>.recursive: true` to include subfolders for that source and preserve
+their relative paths. Each source defaults to `false`; there is no global recursive option.
 
 | Page content | Default | With `--redo-ocr` |
 | --- | --- | --- |
@@ -128,8 +164,12 @@ and output hashes return `unchanged` without another Azure submission.
 | Blank/vector-only or unsupported page | Keep the page unchanged. | Keep the page unchanged. |
 
 Mixed PDFs are processed page by page. Only eligible scan pages are sent to Azure;
-all other pages remain in the output. If no page is eligible, the file is skipped and
-no output is created. `page_kinds` and `ocr_pages` explain the decision in JSON results.
+all other supported pages remain in the output. Named queues copy already-searchable
+PDFs byte-for-byte without Azure, then apply the same verification and retention policy.
+Unsupported pages, text drawing without extractable text, wholly text-free input with no
+OCR candidates, or any selected OCR page with no resulting text require review; input is
+retained and no new output is published. This includes blank scanned pages.
+`convert` skips files with no eligible page. `page_kinds` and `ocr_pages` explain the decision in JSON results.
 
 Original encoded images are preserved without rendering or recompression. The CLI
 uses only invisible text and font resources from Azure's searchable PDF, then adds them
@@ -158,6 +198,12 @@ output, even with that option. Identical completed output remains `unchanged`.
 To repeat OCR for the same completed input/settings, choose a new output path.
 
 After an interruption, rerun the same command to resume the saved Azure operation.
+If only input deletion failed, `cleanup_pending` retries deletion without Azure, after
+checking the saved output and input hashes again. If that output has moved or changed,
+`needs_review` keeps the input and prevents automatic recreation. A publication interrupted
+before its outcome can be confirmed also stops for review if output is missing. Restore
+the recorded output only after checking the downstream result; do not clear history as a
+routine retry. If deletion finished just before a crash, the next run reconciles its record.
 An uncertain submission or expired result requires explicit review before
 `--retry-uncertain`, which may create a new billable analysis.
 See [recovery and state](docs/reference/processing.md#recovery-and-state).
@@ -179,7 +225,7 @@ No task is registered by installation.
 | Inspect effective settings and their sources | `config show` | [Configuration](docs/reference/configuration.md) |
 | Sign in without uploading PDFs | `auth login [--reauthenticate] [--dry-run]` | [Authentication](docs/reference/configuration.md#azure-options) |
 | Convert one PDF | `convert INPUT --output OUTPUT` | [Processing](docs/reference/processing.md) |
-| Scan configured folders once | `run [--recursive]` | [Processing](docs/reference/processing.md) |
+| Scan configured folders once | `run [--source ID]` | [Processing](docs/reference/processing.md) |
 | Inspect a PDF locally | `verify INPUT [--expected-pages N] [--require-text]` | [Verification](docs/reference/processing.md#verification) |
 
 Use `COMMAND --help` for options. Common `--config PATH`, `--quiet`, and
@@ -188,7 +234,7 @@ Progress goes to stderr as `[INFO]`, `[SUCCESS]`, or `[ERROR]`; final results go
 stdout as UTF-8 JSON. `--quiet` keeps errors and JSON; `--verbose` adds diagnostics.
 Terminal colors are disabled for redirects, `NO_COLOR`, and unsupported terminals.
 
-Exit codes: **0** success/no eligible work, **1** one or more file failures,
+Exit codes: **0** success/no eligible work, **1** one or more file failures, review items, or pending deletions,
 **2** argument/configuration/command error, **130** interruption.
 
 ## Limits and data handling
@@ -206,10 +252,11 @@ Exit codes: **0** success/no eligible work, **1** one or more file failures,
 - Only eligible pages are sent, with old invisible text removed. Original image data is
   preserved in the final PDF. Accessibility, signatures, PDF/A and OCR accuracy are not
   guaranteed by structural checks.
-- Blank or unreadable pages may have no text. A wholly text-free result is saved with
-  a warning if Azure reports no words. When Azure reports words but downloaded text is
+- Blank or unreadable pages may have no text. Named queues retain input for review.
+  `convert` saves a wholly text-free result with a warning if Azure reports no words. When Azure reports words but downloaded text is
   absent on those pages, publication fails.
-- No original deletion, automatic archive, receipt-field extraction, or document categorization.
+- Input deletion is opt-in per named source. No automatic archive, receipt-field extraction,
+  issue-date renaming, final document filing, or categorization is performed.
 - Output PDFs go to the chosen output folder. Job manifests, run reports, and lock
   files go to `~/.tkn/pdf_ocr_pipeline/state/` by default. No persistent OCR-text JSON
   or application cache is created. These local state files contain paths and hashes;
@@ -234,13 +281,9 @@ tkn-pdf-ocr --version
 
 Normal updates use `--reinstall`. Editable installation is only for development:
 `uv tool install -e . --reinstall`.
-When upgrading from 0.1.0, change `azure.auth_mode: azure_cli` to `browser`.
-The removed `azure_cli` value produces an actionable configuration error.
-For 0.3.0, back up active configuration files, set `schema_version: "2.0.0"`, and
-remove `existing_text` / `redo_dpi`. Use `--redo-ocr` for explicit OCR text replacement.
-Old processing records and outputs remain intact, but do not count as completed results
-for the new image-preserving method. Use a new destination or `--overwrite` with backup.
-See the [upgrade procedure](docs/reference/configuration.md#upgrade-from-010--020).
+Folder runs use `sources` exclusively (configuration schema `3.0.0`). Define one entry
+for a single folder pair or additional entries for multiple queues. When no sources are configured, `run` uses the built-in `default` queue described above.
+`convert INPUT --output OUTPUT` uses explicit file paths independently of folder settings.
 
 Development checks:
 

@@ -149,7 +149,7 @@ def test_config_show_and_logging_modes(capsys):
     assert main(["config", "show", "--quiet"]) == 0
     result = capsys.readouterr()
     assert not result.err
-    assert json.loads(result.out)["effective_schema_version"] == "2.0.0"
+    assert json.loads(result.out)["effective_schema_version"] == "3.0.0"
     assert main(["--verbose", "config", "show"]) == 0
     assert "[DEBUG]" in capsys.readouterr().err
     assert main(["--quiet", "config", "show", "--verbose"]) == 2
@@ -170,3 +170,23 @@ def test_help(argv):
     with pytest.raises(SystemExit) as caught:
         main(argv)
     assert caught.value.code == 0
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "--input-dir", "incoming"],
+        ["run", "--output-dir", "outgoing"],
+        ["convert", "input.pdf", "--output-dir", "outgoing"],
+        ["convert", "input.pdf"],
+    ],
+)
+def test_removed_folder_options_and_missing_output_rejected(argv, capsys):
+    assert main(argv) == 2
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"
+
+
+@pytest.mark.parametrize("option", ["--recursive", "--no-recursive"])
+def test_recursive_is_configured_per_source_not_by_cli(option, capsys):
+    assert main(["run", option]) == 2
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"
