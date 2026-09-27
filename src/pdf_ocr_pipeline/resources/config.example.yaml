@@ -12,7 +12,7 @@ max_file_mb: 500
 #   recursive: false, after_success: keep, output_suffix: ""
 # Define sources below to use only your configured queues (no extra default queue).
 # Replace sources: {} with the commented mapping below to customize queues.
-# IDs are stable lowercase ASCII names; do not rename active queues.
+# IDs select sources and label results; renaming does not change output collision handling.
 # Omitted after_success keeps input; output_suffix defaults to an empty string.
 sources: {}
 # sources:

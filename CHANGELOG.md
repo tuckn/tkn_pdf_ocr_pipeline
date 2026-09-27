@@ -13,6 +13,19 @@ available in Git; 0.2.0 is described in the existing validation record. No separ
 0.4.0 snapshot or version-specific record was found, so changes between 0.3.0 and
 0.5.0 are grouped under 0.5.0 rather than assigned speculatively to 0.4.0.
 
+## 0.7.0 — 2026-09-28
+
+### Changed
+
+- `run` and `convert` skip an input when any requested output already exists.
+  `--overwrite` backs up and replaces existing outputs.
+- Each run uses current files and settings; past job and handoff data are not
+  consulted. Run reports remain as history, and output/source locks coordinate
+  concurrent executions.
+- A stopped run may submit to Azure again if no output was published. If an
+  output exists but input deletion was interrupted, inspect and remove the
+  input manually.
+
 ## 0.6.0 — 2026-09-27
 
 ### Added
@@ -55,8 +68,7 @@ available in Git; 0.2.0 is described in the existing validation record. No separ
 
 Back up edited configuration and move each input/output pair into a named source.
 Set `schema_version: "3.0.0"` and place recursion under that source. Use `keep`
-unless deletion is intended. Keep source IDs and the state directory stable to
-retain delivery history. See the [configuration reference](docs/reference/configuration.md).
+unless deletion is intended. See the [configuration reference](docs/reference/configuration.md).
 
 ## 0.3.0 — 2026-09-22
 
@@ -76,7 +88,7 @@ retain delivery history. See the [configuration reference](docs/reference/config
 
 For this historical version, configuration required schema `2.0.0` and removal of
 the old settings. Existing conflicting outputs required a new destination or
-`--overwrite` with backup. For the current version, follow the 0.5.0 notes above.
+`--overwrite` with backup.
 
 See [0.3.0 live validation](docs/validation.md#live-ocr-validation-030-2026-09-22)
 for image preservation, selected-text checks and their limits.

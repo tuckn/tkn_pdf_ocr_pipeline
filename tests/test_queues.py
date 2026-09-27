@@ -53,32 +53,24 @@ def test_delete_only_after_verified_publication(tmp_path):
     config, source, output = queued(tmp_path)
     original = source.read_bytes()
     result = only_result(config, provider=FakeProvider())
-    assert result["status"] == "created"
-    assert result["source_action"] == "deleted"
+    assert result["status"] == "created" and result["source_action"] == "deleted"
     assert not source.exists()
     assert inspect_pdf(output.read_bytes()).image_hashes == inspect_pdf(original).image_hashes
-    record = json.loads(Path(result["handoff"]).read_text())
-    assert record["status"] == "completed" and record["validation"] == "passed"
-    assert record["source_sha256"] == sha256(original)
-    assert record["output_sha256"] == sha256(output.read_bytes())
-    output.unlink()
-    # Restoring an identical input does not cause duplicate delivery or another deletion.
     source.write_bytes(original)
     again = only_result(config)
-    assert again["reason"] == "already_handed_off" and source.exists() and not output.exists()
+    assert again["status"] == "skipped" and again["reason"] == "output_exists"
+    assert source.exists()
 
 
-def test_keep_completed_delivery_survives_output_move_and_setting_change(tmp_path):
+def test_source_rename_treats_existing_output_as_collision(tmp_path):
     config, source, output = queued(tmp_path, after="keep")
-    first = only_result(config, provider=FakeProvider())
-    assert first["source_action"] == "kept"
-    output.rename(tmp_path / "downstream.pdf")
-    items = {"receipts": replace(config.sources["receipts"], output_suffix="_new")}
-    config = replace(config, sources=items, azure=replace(config.azure, locale="ja"))
+    assert only_result(config, provider=FakeProvider())["status"] == "created"
+    config = replace(config, sources={"cards": config.sources["receipts"]})
     again = only_result(config)
-    assert again["reason"] == "already_handed_off"
-    assert again["output"] == str(output.resolve())
-    assert source.exists() and not output.exists()
+    assert again["status"] == "skipped" and source.exists() and output.exists()
+    output.unlink()
+    fresh = only_result(config, provider=FakeProvider())
+    assert fresh["status"] == "created" and fresh["source_id"] == "cards"
 
 
 @pytest.mark.parametrize("hidden", [False, True])
@@ -104,116 +96,44 @@ def test_dry_run_previews_delete_and_writes_nothing(tmp_path, data):
     assert set(tmp_path.rglob("*")) == dirs and not output.exists()
 
 
-def block_delete(monkeypatch, source):
-    real = Path.unlink
+def test_failed_delete_requires_manual_cleanup(tmp_path, monkeypatch):
+    config, source, output = queued(tmp_path)
+    real_unlink = Path.unlink
 
-    def unlink(path, *args, **kwargs):
+    def fail_source_unlink(path, *args, **kwargs):
         if path == source.resolve():
             raise PermissionError("synthetic sharing violation")
-        return real(path, *args, **kwargs)
+        return real_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", unlink)
-    return real
-
-
-def test_failed_delete_retries_cleanup_without_provider(tmp_path, monkeypatch):
-    config, source, output = queued(tmp_path)
-    real = block_delete(monkeypatch, source)
+    monkeypatch.setattr(Path, "unlink", fail_source_unlink)
     first = only_result(config, provider=FakeProvider())
-    assert first["status"] == "cleanup_pending" and source.exists() and output.exists()
-    state = json.loads(Path(first["handoff"]).read_text())
-    assert state["status"] == "cleanup_pending"
-    planned = only_result(config, dry=True)
-    assert planned["action"] == "finish_handoff" and source.exists()
-    assert json.loads(Path(first["handoff"]).read_text()) == state
-    monkeypatch.setattr(Path, "unlink", real)
-    again = only_result(config)
-    assert again["source_action"] == "deleted" and not source.exists()
+    assert first["status"] == "needs_review" and first["reason"] == "input_delete_failed"
+    assert source.exists() and output.exists()
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    second = only_result(config)
+    assert second["status"] == "skipped" and source.exists()
 
 
-@pytest.mark.parametrize("change", ["missing", "changed"])
-def test_pending_cleanup_never_deletes_without_same_output(tmp_path, monkeypatch, change):
-    config, source, output = queued(tmp_path)
-    real = block_delete(monkeypatch, source)
-    only_result(config, provider=FakeProvider())
-    monkeypatch.setattr(Path, "unlink", real)
-    if change == "missing":
-        output.unlink()
-    else:
-        output.write_bytes(b"changed downstream")
-    result = only_result(config)
-    assert result["status"] == "needs_review"
-    assert result["reason"] == "handoff_output_missing_or_changed" and source.exists()
-    assert output.exists() == (change == "changed")
-
-
-def test_input_changed_after_publication_is_retained(tmp_path, monkeypatch):
+def test_input_changed_after_output_publication_is_not_deleted(tmp_path, monkeypatch):
     import pdf_ocr_pipeline.pipeline as module
 
     config, source, output = queued(tmp_path)
-    original = module.write_json
+    original_write = module.atomic_write
+    changed = make_pdf("replacement input")
 
-    def changed(path, value):
-        original(path, value)
-        if value.get("status") == "published":
-            source.write_bytes(make_pdf("new source"))
+    def publish_and_change(path, data, **kwargs):
+        original_write(path, data, **kwargs)
+        if path == output.resolve():
+            source.write_bytes(changed)
 
-    monkeypatch.setattr(module, "write_json", changed)
+    monkeypatch.setattr(module, "atomic_write", publish_and_change)
     result = only_result(config, provider=FakeProvider())
     assert result["status"] == "needs_review"
-    assert result["reason"] == "input_changed_before_cleanup"
-    assert source.exists() and output.exists()
+    assert result["reason"] == "input_changed_before_delete"
+    assert source.read_bytes() == changed and output.exists()
 
 
-@pytest.mark.parametrize("failure", ["before_write", "after_write", "downstream_move"])
-def test_ambiguous_publication_never_recreates_or_deletes(tmp_path, monkeypatch, failure):
-    import pdf_ocr_pipeline.pipeline as module
-
-    config, source, output = queued(tmp_path)
-    real = module.atomic_write
-
-    def publish(path, data, **kwargs):
-        if failure != "before_write":
-            real(path, data, **kwargs)
-        if failure == "downstream_move":
-            path.rename(tmp_path / "downstream.pdf")
-        else:
-            raise OSError("synthetic interruption")
-
-    monkeypatch.setattr(module, "atomic_write", publish)
-    first = only_result(config, provider=FakeProvider())
-    assert first["status"] == "failed" and source.exists()
-    monkeypatch.setattr(module, "atomic_write", real)
-    again = only_result(config)
-    if failure == "after_write":
-        assert again["source_action"] == "deleted" and not source.exists()
-    else:
-        assert again["status"] == "needs_review" and source.exists() and not output.exists()
-
-
-def test_interruption_after_delete_recovers_record(tmp_path, monkeypatch):
-    import pdf_ocr_pipeline.queues as module
-
-    config, source, output = queued(tmp_path)
-    real = module.write_json
-
-    def write(path, value):
-        if value.get("status") == "completed":
-            raise OSError("synthetic interruption after unlink")
-        real(path, value)
-
-    monkeypatch.setattr(module, "write_json", write)
-    first = only_result(config, provider=FakeProvider())
-    assert first["status"] == "failed" and not source.exists() and output.exists()
-    monkeypatch.setattr(module, "write_json", real)
-    planned = only_result(config, dry=True)
-    assert planned["action"] == "record_input_absent"
-    result = only_result(config)
-    assert result["reason"] == "cleanup_record_recovered"
-    assert json.loads(Path(result["handoff"]).read_text())["status"] == "completed"
-
-
-def test_no_recognized_words_requires_review_and_no_retry(tmp_path):
+def test_no_recognized_words_requires_review(tmp_path):
     class NoWords(FakeProvider):
         def collect(self, operation_url, *, include_pdf=True):
             return (
@@ -226,7 +146,6 @@ def test_no_recognized_words_requires_review_and_no_retry(tmp_path):
     first = only_result(config, provider=NoWords())
     assert first["reason"] == "ocr_pages_without_text"
     assert first["status"] == "needs_review" and source.exists() and not output.exists()
-    assert only_result(config)["status"] == "needs_review"
 
 
 def test_blank_and_unsupported_inputs_retained(tmp_path):
@@ -393,15 +312,15 @@ def test_queue_validation_failure_keeps_original(tmp_path, failure):
         provider.callback = lambda: source.write_bytes(make_pdf("changed source"))
     result = only_result(config, provider=provider)
     assert result["status"] == "failed" and source.exists() and not output.exists()
-    assert not list((config.state_dir / "handoffs").rglob("*.json"))
 
 
-def test_existing_output_requires_explicit_overwrite_before_delete(tmp_path):
+def test_existing_output_skips_unless_overwrite_is_explicit(tmp_path):
     config, source, output = queued(tmp_path)
     output.parent.mkdir()
     original_output = make_pdf("old output")
     output.write_bytes(original_output)
-    assert only_result(config)["status"] == "failed"
+    skipped = only_result(config)
+    assert skipped["status"] == "skipped" and skipped["reason"] == "output_exists"
     assert source.exists() and output.read_bytes() == original_output
     provider = FakeProvider()
     result = run_sources(config, Options(overwrite=True), provider_factory=lambda: provider)[
@@ -409,33 +328,6 @@ def test_existing_output_requires_explicit_overwrite_before_delete(tmp_path):
     ][0]
     assert result["status"] == "replaced" and not source.exists()
     assert Path(result["backup"]).read_bytes() == original_output
-
-
-def test_retry_flags_cannot_override_missing_handoff_output(tmp_path, monkeypatch):
-    config, source, output = queued(tmp_path)
-    original = block_delete(monkeypatch, source)
-    only_result(config, provider=FakeProvider())
-    monkeypatch.setattr(Path, "unlink", original)
-    output.unlink()
-    result = run_sources(
-        config,
-        Options(overwrite=True, redo_ocr=True, retry_uncertain=True),
-        provider_factory=lambda: pytest.fail("no Azure"),
-    )["files"][0]
-    assert result["status"] == "needs_review" and source.exists() and not output.exists()
-
-
-def test_changed_keep_policy_requires_recorded_output_before_delete(tmp_path):
-    config, source, output = queued(tmp_path, after="keep")
-    only_result(config, provider=FakeProvider())
-    output_data = output.read_bytes()
-    output.unlink()
-    config = replace(
-        config, sources={"receipts": replace(config.sources["receipts"], after_success="delete")}
-    )
-    assert only_result(config)["status"] == "needs_review" and source.exists()
-    output.write_bytes(output_data)
-    assert only_result(config)["source_action"] == "deleted" and not source.exists()
 
 
 def test_selected_queue_leaves_other_input_untouched(tmp_path):

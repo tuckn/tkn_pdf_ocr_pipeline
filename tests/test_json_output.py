@@ -1,12 +1,10 @@
 import json
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 from conftest import FakeProvider, make_pdf
 
 from pdf_ocr_pipeline.config import resolve_config
-from pdf_ocr_pipeline.errors import OcrError
 from pdf_ocr_pipeline.pipeline import Options, process_file, run_sources
 
 
@@ -30,7 +28,7 @@ def test_pdf_and_json_share_one_azure_analysis(config, tmp_path):
     assert len(provider.submissions) == 1
     assert provider.pdf_requests == [True]
     again = process_file(source, output, config, options, provider_factory=lambda: provider)
-    assert again["status"] == "unchanged" and len(provider.submissions) == 1
+    assert again["status"] == "skipped" and len(provider.submissions) == 1
 
 
 def test_json_only_analyzes_searchable_pdf_without_writing_pdf(config, tmp_path):
@@ -101,9 +99,6 @@ def test_queue_json_destination_and_verified_cleanup(tmp_path):
     assert (tmp_path / "pdf" / "sample_ocr.pdf").exists()
     assert (tmp_path / "json" / "sample_ocr.json").exists()
     assert not source.exists()
-    handoff = json.loads(Path(item["handoff"]).read_text(encoding="utf-8"))
-    assert handoff["json_output"] == str(tmp_path / "json" / "sample_ocr.json")
-    assert handoff["json_sha256"] == item["json_sha256"]
 
 
 def test_cli_only_json_without_pdf_output(config, tmp_path, monkeypatch, capsys):
@@ -175,7 +170,7 @@ def test_json_publication_failure_keeps_input_and_requires_review(tmp_path, monk
     assert not (tmp_path / "out" / "sample.pdf").exists()
     monkeypatch.setattr(module, "atomic_write", original)
     second = run_sources(config, Options(json=True), provider_factory=FakeProvider)
-    assert second["files"][0]["status"] == "needs_review" and source.exists()
+    assert second["files"][0]["status"] == "created" and not source.exists()
 
 
 def test_json_opt_in_and_conflict_without_azure(config, tmp_path):
@@ -187,14 +182,14 @@ def test_json_opt_in_and_conflict_without_azure(config, tmp_path):
     process_file(source, output, config, Options(), provider_factory=lambda: provider)
     assert not json_output.exists()
     json_output.write_text('{"edited":true}', encoding="utf-8")
-    with pytest.raises(OcrError, match="JSON output exists"):
-        process_file(
-            source,
-            tmp_path / "different.pdf",
-            config,
-            Options(json=True, json_output=json_output),
-            provider_factory=lambda: (_ for _ in ()).throw(AssertionError("network")),
-        )
+    skipped = process_file(
+        source,
+        tmp_path / "different.pdf",
+        config,
+        Options(json=True, json_output=json_output),
+        provider_factory=lambda: (_ for _ in ()).throw(AssertionError("network")),
+    )
+    assert skipped["status"] == "skipped" and skipped["reason"] == "json_output_exists"
     assert json_output.read_text(encoding="utf-8") == '{"edited":true}'
 
 
@@ -264,7 +259,7 @@ def test_json_only_named_queue_deletes_after_verified_json(tmp_path):
     assert unreadable.exists() and not (tmp_path / "json" / "unreadable.json").exists()
 
 
-def test_queue_refuses_later_delete_when_json_is_missing(tmp_path):
+def test_missing_json_does_not_make_existing_pdf_safe_to_reprocess(tmp_path):
     config = resolve_config(
         overrides={
             "state_dir": str(tmp_path / "state"),
@@ -286,11 +281,66 @@ def test_queue_refuses_later_delete_when_json_is_missing(tmp_path):
     source = tmp_path / "in" / "sample.pdf"
     source.parent.mkdir()
     source.write_bytes(make_pdf())
-    first = run_sources(config, Options(json=True), provider_factory=FakeProvider)
-    assert first["files"][0]["source_action"] == "kept"
+    assert (
+        run_sources(config, Options(json=True), provider_factory=FakeProvider)["files"][0]["status"]
+        == "created"
+    )
     (tmp_path / "out" / "sample.json").unlink()
-    source_config = replace(config.sources["receipts"], after_success="delete")
-    changed = replace(config, sources={"receipts": source_config})
-    later = run_sources(changed, Options(json=True), provider_factory=FakeProvider)
-    assert later["files"][0]["status"] == "needs_review"
+    changed = replace(
+        config, sources={"receipts": replace(config.sources["receipts"], after_success="delete")}
+    )
+    later = run_sources(
+        changed, Options(json=True), provider_factory=lambda: pytest.fail("no Azure")
+    )
+    assert later["files"][0]["status"] == "skipped" and source.exists()
+
+
+def test_partial_pdf_and_json_publication_skips_until_explicit_overwrite(tmp_path, monkeypatch):
+    import pdf_ocr_pipeline.pipeline as module
+
+    config = resolve_config(
+        overrides={
+            "state_dir": str(tmp_path / "state"),
+            "min_age_seconds": 0,
+            "sources": {
+                "cards": {
+                    "input_dir": str(tmp_path / "in"),
+                    "output_dir": str(tmp_path / "out"),
+                    "after_success": "delete",
+                }
+            },
+            "azure": {
+                "endpoint": "https://example.cognitiveservices.azure.com",
+                "auth_mode": "key",
+                "key_env": "TEST_OCR_KEY",
+            },
+        }
+    ).config
+    source = tmp_path / "in" / "sample.pdf"
+    source.parent.mkdir()
+    source.write_bytes(make_pdf())
+    original_write = module.atomic_write
+
+    def fail_pdf(path, data, **kwargs):
+        if path.suffix == ".pdf":
+            raise OSError("synthetic PDF publication failure")
+        return original_write(path, data, **kwargs)
+
+    monkeypatch.setattr(module, "atomic_write", fail_pdf)
+    first = run_sources(config, Options(json=True), provider_factory=FakeProvider)
+    assert first["files"][0]["status"] == "failed"
+    assert source.exists() and (tmp_path / "out" / "sample.json").exists()
+    assert not (tmp_path / "out" / "sample.pdf").exists()
+
+    monkeypatch.setattr(module, "atomic_write", original_write)
+    skipped = run_sources(
+        config, Options(json=True), provider_factory=lambda: pytest.fail("no Azure")
+    )
+    assert skipped["files"][0]["reason"] == "json_output_exists"
     assert source.exists()
+    replaced = run_sources(
+        config, Options(json=True, overwrite=True), provider_factory=FakeProvider
+    )
+    item = replaced["files"][0]
+    assert item["status"] == "created" and item["source_action"] == "deleted"
+    assert (tmp_path / "out" / "sample.pdf").exists()

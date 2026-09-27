@@ -148,7 +148,7 @@ def test_auth_failure_precedes_billable_submission(browser_config, monkeypatch, 
         )
     assert "secret" not in str(error.value)
     assert not requests
-    assert not list(browser_config.state_dir.glob("jobs/*.json"))
+    assert not (browser_config.output_dir / "out.pdf").exists()
     assert source.read_bytes() == make_pdf()
 
 
@@ -202,28 +202,16 @@ def test_login_reauthenticate_without_pdf_requests(browser_config, monkeypatch, 
     assert sum(c.authenticate.call_count for c in instances) == 2
 
 
-def test_auth_change_and_release_do_not_invalidate_completed_pdf(browser_config, monkeypatch):
-    import pdf_ocr_pipeline.pipeline as pipeline
-    from pdf_ocr_pipeline.io_utils import sha256
-
+def test_existing_output_skips_without_authentication(browser_config):
     source = browser_config.input_dir / "scan.pdf"
     source.parent.mkdir()
     source.write_bytes(make_pdf())
     output = browser_config.output_dir / "out.pdf"
     first = replace(browser_config, azure=replace(browser_config.azure, auth_mode="key"))
-    result = process_file(source, output, first, Options(), provider_factory=FakeProvider)
-    # Authentication-only changes do not invalidate image-preserving jobs.
-    old = {
-        "generator": "0.3.0",
-        "model": "prebuilt-read",
-        "endpoint": first.azure.endpoint,
-        "api_version": first.azure.api_version,
-        "locale": first.azure.locale,
-        "redo_ocr": False,
-    }
-    state = json.loads(Path(result["state"]).read_text())
-    assert state["fingerprint"] == sha256(json.dumps(old, sort_keys=True).encode())
-    monkeypatch.setattr(pipeline, "__version__", "0.3.1")
+    assert (
+        process_file(source, output, first, Options(), provider_factory=FakeProvider)["status"]
+        == "created"
+    )
     again = process_file(
         source,
         output,
@@ -231,7 +219,7 @@ def test_auth_change_and_release_do_not_invalidate_completed_pdf(browser_config,
         Options(),
         provider_factory=lambda: pytest.fail("must not authenticate or resubmit"),
     )
-    assert again["status"] == "unchanged"
+    assert again["status"] == "skipped" and again["reason"] == "output_exists"
 
 
 def test_azure_cli_config_is_rejected_with_browser_migration():

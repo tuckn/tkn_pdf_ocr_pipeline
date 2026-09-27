@@ -46,18 +46,6 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
     atomic_write(path, (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
 
 
-def read_json(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(value, dict) or value.get("schema_version") != "1.0.0":
-            raise ValueError("unsupported state")
-        return value
-    except (ValueError, OSError) as exc:
-        raise OcrError(f"Invalid state file; preserve it and investigate: {path}") from exc
-
-
 def backup(path: Path, expected: str) -> Path:
     data = path.read_bytes()
     if sha256(data) != expected:

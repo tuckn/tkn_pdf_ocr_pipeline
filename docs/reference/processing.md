@@ -2,40 +2,26 @@
 
 ## Processing steps
 
-1. Resolve settings and explicit destinations. Folder input/output/state roots cannot overlap.
-2. Enumerate `.pdf` filenames case-insensitively, sorting deterministically.
-   Subdirectories require `sources.<id>.recursive: true`; directory symlinks/junctions are not followed.
-   File links escaping the input root are rejected.
-3. Read a stable source snapshot. Validate file size, encryption, syntax, page count,
-   displayed page dimensions and extractable text. Sources younger than
-   `min_age_seconds` are deferred. Compare size/mtime around reads, then SHA-256
-   before upload and publication. This reduces copying races, but is not a writer lock.
-4. Classify each page; select image-only scans and, only with `--redo-ocr`, scans with
-   standard invisible OCR text. Keep native, already-OCRed and unsupported pages as applicable.
-   For single-file `convert`, no eligible pages means a skipped file. Named queues copy
-   already-searchable PDFs without Azure and hold uncertain or text-free inputs for review.
-   Match durable handoff history before evaluating a new OCR job.
-5. Validate conflicts. Dry-run returns without authentication, API calls, folders, state,
-   locks, backups or reports. It lists `page_kinds` and 1-based `ocr_pages`; it cannot
-   validate cloud access, the eventual upload size or recognition quality.
-6. Build a PDF containing only selected pages, removing old invisible text and excluding
-   annotations from the upload. Verify original encoded image data before authenticating.
-7. Persist submission intent, POST once, then persist the accepted operation URL.
-8. Poll and download the searchable PDF. Validate its count against selected pages and
-   Azure analysis metadata. Extract invisible text and its font/resources into Form XObjects;
-   exclude Azure image drawing and other visible painting. Clone the original document,
-   replace old invisible text on selected pages, and graft the new text onto those pages.
-   Transform OCR coordinates to the original crop/rotation/UserUnit; keep all other pages.
-9. Validate the composed PDF, including encoded image hashes, then recheck source/output.
-   Record the output hash before atomic publication. Back up a replaced output, mark the
-   job complete after publication and a read-back hash check. Named queues persist a
-   handoff intent before publication, record verification, then apply keep/delete policy.
-   Recheck the original hash immediately before deletion and record its completion.
-   Save a per-run JSON report.
+1. Resolve settings and destinations; input, output and operational directories must not overlap.
+2. Enumerate `.pdf` inputs in deterministic order. Subdirectories require `recursive: true`.
+   Directory links are not followed, and file links escaping the input root are rejected.
+3. For each input, check all requested output filenames. If any exists, return `skipped`
+   without authentication or Azure access unless `--overwrite` is specified.
+4. Read a stable source snapshot and validate size, encryption, syntax and page count.
+   Files younger than `min_age_seconds` are deferred. Classify pages and select scan pages;
+   `--redo-ocr` also selects standard invisible OCR text. Named sources pass through
+   searchable PDFs and hold uncertain or text-free inputs for review.
+5. Dry-run reports planned work without authentication, network access or writes.
+6. Build and inspect the selected-page upload. Azure analyzes the PDF and returns its
+   analysis and, when requested, a searchable PDF. The CLI composes invisible text onto
+   the original pages without rendering or recompressing source images.
+7. Validate the result, recheck the input and outputs, and back up existing destinations
+   when `--overwrite` is used. Publish complete files atomically and verify their hashes.
+   For named sources with `after_success: delete`, recheck the input and outputs before
+   deleting the input. Save a per-run JSON report.
 
-All files in a batch are independent. File failures are collected; later files continue.
-Structural setup errors (such as overlapping roots) stop the command.
-Jobs that cannot be accepted or completed are never represented as successful outputs.
+Files in a batch are independent. Individual failures do not stop later inputs.
+Configuration and folder-layout errors stop the command before file processing.
 
 ## Optional OCR JSON
 
@@ -52,9 +38,9 @@ the original `azureAnalyzeResult`. The envelope resembles AI Builder
 recognition content but is not an AI Builder API response. Text and line order
 may differ; compare representative receipts before changing downstream parsing.
 
-JSON is written atomically and verified by hash. A named queue records both
-requested output paths/hashes and checks both before configured input deletion.
-Interrupted or ambiguous delivery requires review under the handoff rules.
+JSON is written atomically and verified by hash. A named source checks every
+requested output before configured input deletion. An interrupted two-output run
+may leave only one output; inspect the files before retrying.
 In a named queue, JSON-only analysis with a page lacking recognized words is
 held for review and the input remains in place.
 
@@ -71,7 +57,7 @@ Public Azure resource origin: `https://<resource-name>.cognitiveservices.azure.c
 
 The operation URL must match the configured origin, model path and API version.
 Redirects are disabled, so credentials are not forwarded to a different origin.
-Credentials and raw Azure error bodies/OCR text are excluded from application logs/state.
+Credentials and raw Azure error bodies/OCR text are excluded from application logs.
 Analysis JSON is used for page/word validation. When `--json` or
 `--only-json` is requested, it is saved in the source-aligned OCR JSON
 file. Without either option, the analysis remains transient.
@@ -89,43 +75,28 @@ The infrastructure handoff is [provided separately](../azure-platform-request.md
 
 ## Recovery and state
 
-State lives under the configured directory:
+The configured `state_dir` holds operational files:
 
-| Location | Purpose | If missing |
-| --- | --- | --- |
-| `jobs/<job-id>.json` (`convert`), `jobs/<source-id>/<job-id>.json` (queues) | Source/settings identity, Azure operation URL, timestamps, stage and hashes | Cannot resume or establish identical output safely. |
-| `handoffs/<source-id>/<delivery-id>.json` | Input/output hashes, verification and publication/deletion progress | Completed delivery can no longer prevent regeneration after a downstream move. |
-| `runs/<run-id>.json` | Completed invocation's file statuses/counts, including failures | Past summary unavailable; jobs/outputs remain. |
-| `locks/<output-id>.lock`, `locks/source-<input-id>.lock` | OS-backed output and input locks shared across CLI invocations | Recreated; file presence alone does not mean locked. |
-
-No cache or persistent staging PDFs are used.
-Staging files are beside the final file for atomic publication and are removed during
-normal error handling. A forcibly killed process can leave a `.<name>.*.tmp` file.
-After confirming no process is running, remove only that abandoned temporary file.
-
-| Saved stage | Next run |
+| Location | Purpose |
 | --- | --- |
-| `submitting` | Acceptance may be unknown. Stop until the user explicitly chooses `--retry-uncertain`. |
-| `submitted` | Poll/download the same operation; do not POST again. |
-| `ready` | If output hash already matches, return unchanged; otherwise download/validate again. |
-| `completed` | `convert` jobs: matching output hash returns unchanged; missing output can be downloaded from the saved operation while available. Named queues consult their separate handoff record first. |
-| `review` | A selected OCR page has no extractable text. Keep input, publish no output, and do not access Azure on an ordinary retry. |
+| `runs/<run-id>.json` | Completed invocation's file statuses and counts. These reports are history and do not affect later runs. |
+| `locks/<output-id>.lock`, `locks/source-<input-id>.lock` | Coordinate concurrent CLI processes that share this directory. |
 
-Azure result retention is limited. If the operation is expired (HTTP 404), choose
-`--retry-uncertain` after checking the saved state; this may incur another analysis charge.
-The same option deliberately resubmits an existing incomplete job, including one still
-running. It does not force reprocessing an unchanged completed output.
-Do not delete the state as a routine retry mechanism.
+The CLI stages output beside its destination and publishes complete bytes atomically. A forcibly stopped process can leave a
+`.name.*.tmp` file; inspect it after confirming no process is running.
 
-If output exists but is different or lacks matching state, use a new destination or
-explicitly choose `--overwrite`. A backup is created as `<output>.bak-<unique-id>`.
-Backups are retained; there is no automatic cleanup. An input PDF cannot be overwritten.
+If an output exists on the next run, the input is skipped. This includes a run that
+saved output but stopped before deleting its input. Confirm the output and remove the
+input manually when appropriate. If no output exists, the input can be sent to Azure
+again. A submission accepted before interruption may therefore be charged again.
+When PDF and JSON are requested together, interruption can leave only JSON or only
+PDF; either existing requested output causes a skip until the files are reviewed.
 
-Normal errors leave recoverable state; abrupt termination may prevent a final run report.
-A crash after Azure accepts a POST but before the operation URL is persisted is inherently
-uncertain. The durable `submitting` marker prevents silent duplicate submissions.
-A crash after output publication but before completion is recognized through the `ready`
-output hash.
+`--overwrite` backs up each existing requested output as `<name>.bak-<unique-id>`
+then replaces it. Backups are retained. The input PDF cannot be overwritten.
+The CLI rechecks source and output hashes before publication and deletion; external
+editors do not honor its locks, so these checks cannot provide a multi-file transaction.
+A sudden stop can prevent the final run report from being saved.
 
 ## Verification
 
@@ -152,7 +123,7 @@ reading order, selection alignment and image appearance.
 
 - `cli.py`: command parsing, UTF-8 JSON/stdout and log/stderr contract.
 - `config.py`: independently validated configuration layers and packaged defaults.
-- `pipeline.py`: page selection, locks, provenance, resumption/publication.
+- `pipeline.py`: page selection, locks, validation and publication.
 - `azure.py`: Azure authentication and HTTP; mockable without live credentials.
 - `pdf.py`: PDF classification, invisible-text removal/composition and image-preservation validation.
 - `io_utils.py`: hashes, backups and atomic file writing.
@@ -219,50 +190,21 @@ Single-file `convert` retains input. Named sources default to `keep`;
 
 ## Named queue delivery
 
-A handoff is identified by source ID, canonical input path and input SHA-256, independently
-of the OCR fingerprint or output location. Keep IDs and `state_dir` stable. The history is
-retained after output moves and input deletion. Restoring identical input at the same path
-returns `unchanged` without recreating output or deleting the restored input. This does not
-attempt global content deduplication across different input paths or sources.
+Each named source processes its current inputs independently of earlier results.
+The source ID selects the queue and labels the run report; changing it does not
+require any migration. An existing requested output is skipped by default,
+including when an earlier run created it. If a downstream process moves the output
+while the input remains, a later run may produce it again.
 
-| Handoff stage | Retry behavior |
-| --- | --- |
-| `publishing` | Intent was saved before final publication. Matching saved output permits local completion; missing/changed output requires review. |
-| `published` | Output was saved and verified. Recheck input/output hashes and complete retention policy. |
-| `cleanup_pending` | Retry only input deletion, with both hashes rechecked; no OCR. Missing/changed output requires review. |
-| `completed` | Delivery remains complete even after a downstream move. No regeneration based on output absence. |
+An unsupported input or a selected OCR page without extractable text is
+`needs_review`; the input is kept and no new output is published. Recognition
+correctness is not judged. With `after_success: delete`, the CLI removes the
+local input only after requested outputs have been saved and verified. It checks
+source and output hashes immediately before deletion. If deletion fails, the
+result is `needs_review`; later runs see the output and skip, so the user must
+inspect and tidy the input manually.
 
-If the user changes `keep` to `delete`, a previously kept input is removed only when its
-recorded output can still be verified. A completed deletion is not repeated on a restored input.
-An interruption after unlink but before saving completion is reconciled on the next selected
-queue run: a saved cleanup intent plus absence of input completes the record. Recovery records
-that absence was observed; it cannot identify whether this CLI or another application removed it.
-
-Any selected OCR page without extractable result text (including a blank scanned page) is
-`needs_review`, even if another page contains text. Unsupported input pages and text drawing
-without extractable text also require review. Inputs are retained and new output is not
-published. Recognition correctness is not judged. For a reviewed OCR-result issue, explicitly
-choosing `--retry-uncertain` resubmits the saved OCR job and may incur another charge; the
-ordinary retry returns the existing review result without Azure access.
-
-Delivery intent is persisted before output becomes visible, so a downstream consumer moving
-it immediately cannot cause silent automatic republication. A crash before publication and a
-move after publication can be indistinguishable when output is absent. Both conservatively
-require review. Preserve the record and input, inspect downstream files, and restore the exact
-recorded output when available before retrying. `--overwrite`, `--redo-ocr` and
-`--retry-uncertain` never override a handoff stop. If there is no recoverable output, a deliberate
-manual recovery must reconcile the downstream result and the saved record; ordinary runs do
-not infer that a new delivery is wanted. Process a retained file separately with `convert` if a
-new output is required while investigating, without altering its queue history.
-
-Deletion removes the local file directly, not through the recycle bin. Checks establish local
-file persistence, not successful OneDrive upload. Source/output locks coordinate this CLI's
-processes sharing a state directory; external editors/consumers do not honor those locks.
-Final hash checks detect intervening changes, but the multiple files and OneDrive are not a
-single transaction. Downstream scheduling should allow the queue run to finish first.
-
-`run --dry-run` performs no writes or deletion, including no recovery-record updates. Results
-include planned `source_action` (`keep`/`delete`) and `azure_action` (`submit`/`resume`/`none`).
-`files` carries `source_id`; `sources` aggregates statuses for sources represented in results.
-`needs_review`, `cleanup_pending`, or `failed` causes exit code 1. Invalid routing/arguments
-cause exit code 2. Files in all selected sources continue after individual file errors.
+Deletion is direct, without the recycle bin. Local verification does not prove
+OneDrive upload. `run --dry-run` makes no writes and reports the planned
+`source_action` and `azure_action`. Exit code 1 means `failed` or `needs_review`;
+invalid arguments or configuration cause exit code 2.

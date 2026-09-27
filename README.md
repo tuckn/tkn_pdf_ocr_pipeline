@@ -9,77 +9,53 @@
 
 Wordなどから出力された通常の文字があるページは、OCRせず保持します。これらが混在するPDFでは、対象の画像ページだけをOCRします。名前付きキューでは、OCRが不要な検索可能PDFも、そのまま後段へ引き継ぎます。
 
+認識した全文・ページ別の行・Azureの解析結果をJSONファイルにも保存できます。既定ではPDFだけを出力し、JSONも保存する場合は `--json`、JSONだけの場合は `--only-json` を指定します。
+
 文字認識には **Azure Document Intelligence** のReadモデル（`prebuilt-read`）を使います。
 
 複数の入力フォルダから、検証済みのPDFをそれぞれの出力フォルダへ保存できます。
-入力PDFは既定で保持し、対象ごとに `after_success: delete` を指定すると、保存・検証・処理記録の保存後に削除します。
+入力PDFは既定で保持し、対象ごとに `after_success: delete` を指定すると、保存・検証後に削除します。
 構造化データの抽出、発行日に基づくリネーム、最終保管先への移動は後段の処理で行います。
 
 ## 処理の流れ
 
-`tkn-pdf-ocr run` でフォルダを処理するときの流れです。図の保存・削除は、各段階の検証が成功した場合に進みます。
+JSON出力オプションを指定せず、`tkn-pdf-ocr run` でPDFを出力するときの流れです。図の保存・削除は、各段階の検証が成功した場合に進みます。
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant CLI as tkn-pdf-ocr（PC）
+    participant CLI as tkn-pdf-ocr
     participant Input as 入力フォルダ
-    participant State as 処理記録（PC）
     participant Azure as Azure Document Intelligence
     participant Output as 出力フォルダ
+    participant Report as 実行レポート
 
-    Note over CLI,Output: run を実行（手動またはタスクスケジューラ）
-    CLI->>CLI: 設定とフォルダの組み合わせを確認
-    CLI->>Input: 対象のPDFを列挙
+    CLI->>Input: PDFを列挙
     loop PDFごとに処理
-        CLI->>Input: PDFを読み込み、変更途中でないか確認
-        CLI->>CLI: ページを分類し、OCR対象を判定
-        CLI->>State: 過去の処理・引き渡し状況を確認
-        alt dry-run
-            CLI->>CLI: OCR・保存・入力削除の予定を表示
-            Note over CLI,Output: 認証・Azure送信・書き込み・削除は行わない
-        else 引き渡し完了済み（追加の後処理なし）
-            CLI->>CLI: unchanged として処理を省略
-            Note over State,Output: 後段で出力が移動されても再作成しない
-        else 新しく引き渡すPDF
-            alt OCRが必要
-                CLI->>CLI: 対象ページだけの送信用PDFを作成
-                CLI->>CLI: 認証（必要ならブラウザでログイン）
-                CLI->>State: 送信予定を記録
-                CLI->>Azure: 対象ページを送信してOCRを依頼
-                Azure-->>CLI: 処理の受付情報
-                CLI->>State: 再開に使う受付情報を保存
-                loop OCRが完了するまで
-                    CLI->>Azure: 処理状況を確認
-                    Azure-->>CLI: 処理状況を返す
-                end
-                CLI->>Azure: 検索可能PDFを取得
-                Azure-->>CLI: OCR結果のPDF
-                CLI->>CLI: 非表示の文字情報を元PDFへ合成
-                Note over CLI: 元画像を再描画・再圧縮せず保持
-            else OCR不要の検索可能PDF
-                CLI->>CLI: 元PDFをそのまま出力候補にする
+        CLI->>Output: 同名のPDF・JSONを確認
+        alt 既存出力あり・--overwrite なし
+            CLI->>CLI: skipped（入力は保持）
+        else 処理対象
+            CLI->>Input: PDFを読み込み・検証
+            alt OCRまたはJSON解析が必要
+                CLI->>Azure: 対象ページを送信
+                Azure-->>CLI: 解析結果と必要なPDF
             end
-            CLI->>CLI: 出力候補と元PDFの整合性を検証
-            CLI->>State: 引き渡し予定を記録
-            CLI->>Output: PDFを保存し、保存内容を再確認
-            CLI->>State: 保存・検証済みとして記録
-            alt after_success が delete
-                CLI->>CLI: 入力・出力が変わっていないか再確認
-                CLI->>Input: 元PDFを削除
-            else after_success が keep（既定）
-                Note over CLI,Input: 元PDFを保持
+            CLI->>CLI: 出力候補を検証
+            opt --overwrite で既存出力あり
+                CLI->>Output: 既存ファイルをバックアップ
             end
-            CLI->>State: 引き渡し完了を記録
+            CLI->>Output: PDF・JSONを保存し、内容を再確認
+            opt after_success が delete
+                CLI->>Input: 入力が変わっていないことを確認して削除
+            end
         end
     end
-    CLI->>State: 実行結果を保存（通常実行のみ）
-    CLI->>CLI: 件数と各PDFの処理結果を表示
+    CLI->>Report: 結果を保存（通常実行のみ）
 ```
 
-判定できないPDFや、OCR対象ページから文字を取得できなかったPDFは、確認が必要な結果として入力を保持し、新しい出力を保存しません。
-図では中断・エラーからの復旧を省略しています。再実行時は保存済みの受付情報からOCRを再開し、入力削除だけが残っている場合はOCRせず削除を再試行します。
-詳しくは[処理仕様](docs/reference/processing.md#recovery-and-state)を参照してください。
+判定できないPDFや、OCR対象ページから文字を取得できなかったPDFは入力を保持し、新しい出力を保存しません。
+出力保存前に中断すると、次回は再びAzureへ送信する場合があります。出力保存後に入力が残った場合、次回は同名出力があるためスキップします。詳しくは[処理仕様](docs/reference/processing.md#recovery-and-state)を参照してください。
 
 ## 利用前に確認すること
 
@@ -102,7 +78,7 @@ Azureリソースと権限は、あらかじめ用意してください。
 リポジトリのフォルダでインストールし、ヘルプが表示されることを確認します。
 例のパスは、手元のリポジトリの場所に置き換えてください。
 
-```powershell
+```shell
 cd "C:\path\to\tkn_pdf_ocr_pipeline"
 uv tool install .
 tkn-pdf-ocr --help
@@ -112,7 +88,7 @@ tkn-pdf-ocr --help
 
 ### 1. 設定ファイルを作成する
 
-```powershell
+```shell
 tkn-pdf-ocr config init
 ```
 
@@ -141,6 +117,7 @@ sources:
     recursive: false
     input_dir: C:/path/to/receipts/1_rawPDF
     output_dir: C:/path/to/receipts/2_ocrPDF
+    json_output_dir: C:/path/to/receipts/2_ocrJSON
     after_success: delete
     output_suffix: "_ocr"
   catalogs:
@@ -159,15 +136,16 @@ azure:
 | ------------------ | --------------------------------------------------------------------------------------------- |
 | `input_dir`      | OCR対象のPDFがあるフォルダ。                                                                  |
 | `output_dir`     | OCR後のPDFを保存するフォルダ。                                                                |
+| `json_output_dir` | JSONの保存先。省略または `null` ならPDFと同じ出力フォルダ。設定だけではJSON出力は有効になりません。 |
 | `azure.endpoint` | 利用するAzureリソースのエンドポイント。`<resource-name>` を実際のリソース名に置き換えます。 |
 
-`sources` の各項目に入力・出力フォルダを指定します。`receipts` などのIDは処理履歴の識別に使うため、運用開始後は変更しないでください。
+`sources` の各項目に入力・出力フォルダを指定します。`receipts` などのIDは対象の選択と実行結果の表示に使います。IDを変更しても過去の実行結果は現在の処理判断に使いません。
 この例の `receipts` は、検証後に入力を削除します。残す場合は `after_success: keep` にします。省略時も `keep` です。
 `output_suffix: "_ocr"` により `receipt.pdf` は `receipt_ocr.pdf` になります。省略時は同じ名前です。
 追加対象はフォルダを用意してから `enabled: true` にします。
 入力・出力フォルダは `sources.<ID>` 内だけに指定します。トップレベルの `input_dir` / `output_dir` は受け付けません。
 
-有効な対象すべての入力・出力・処理記録のフォルダは、別のフォルダにし、相互に配下へ置かないでください。
+有効な対象すべての入力・PDF出力・実行レポート・ロックのフォルダは、別のフォルダにし、相互に配下へ置かないでください。JSON出力先は同じ対象のPDF出力先と共用したり、その配下に置いたりできますが、入力・実行レポート・ロック・別の対象のフォルダとは重ねられません。
 出力PDFを入力として再び処理することや、元PDFへの上書きを避けるための制約です。
 ブラウザ認証では、上記のようなリソース固有のサブドメインを持つエンドポイントを使います。
 
@@ -175,7 +153,7 @@ azure:
 
 保存した設定が反映されているか確認します。
 
-```powershell
+```shell
 tkn-pdf-ocr config show
 ```
 
@@ -184,7 +162,7 @@ tkn-pdf-ocr config show
 
 ### 4. ブラウザでAzureにログインする
 
-```powershell
+```shell
 tkn-pdf-ocr auth login
 ```
 
@@ -207,7 +185,7 @@ tkn-pdf-ocr auth login
 
 まず、Azureへ送信せずに処理対象を確認します。
 
-```powershell
+```shell
 tkn-pdf-ocr run --dry-run
 ```
 
@@ -215,7 +193,7 @@ tkn-pdf-ocr run --dry-run
 `--dry-run` ではPDFや記録の保存、入力削除は行いません。
 対象を確認したら、OCRを実行します。この実行ではPDFをAzureへ送信します。
 
-```powershell
+```shell
 tkn-pdf-ocr run
 ```
 
@@ -228,12 +206,91 @@ OCR後のPDFは `output_dir` に保存されます。
 
 ## 用途に応じた使い方
 
+### 設定した対象を選んで実行する（run --source）
+
+`--source` の後ろには、設定ファイルの `sources` 直下にあるIDを1つ指定します。
+上記の設定では `receipts` がレシート用、`catalogs` がカタログ用のIDです。`xxxx` は説明用の仮名であり、実際のIDに置き換えます。フォルダのパスやPDFのファイル名は指定しません。
+
+```shell
+# receipts の入力フォルダだけを確認する
+tkn-pdf-ocr run --source receipts --dry-run
+
+# receipts だけを処理する
+tkn-pdf-ocr run --source receipts
+```
+
+`--source` を省略した `run` は、`enabled: true` の対象をすべて処理します。
+存在しないIDや `enabled: false` のIDを指定するとエラーになります。上記の `catalogs` を実行するには、入力フォルダを用意して `enabled: true` に変更してください。
+独自の `sources` がない場合は、既定の対象を `run --source default` で指定できます。
+IDと有効・無効の状態は `tkn-pdf-ocr config show` の `settings.sources` で確認できます。
+
+対象を1つに絞っても、有効な全対象のフォルダ配置を検査します。別の対象にフォルダの重複がある場合も設定の修正が必要です。
+`--source` はフォルダ処理の `run` 用です。1つのPDFを直接指定する場合は `convert` を使います。
+
+### OCR結果をJSONファイルに保存する
+
+| 指定 | 保存するファイル |
+| --- | --- |
+| なし | 検索可能PDFのみ。 |
+| `--json` | 検索可能PDFとOCR結果のJSON。 |
+| `--only-json` | OCR結果のJSONのみ。検索可能PDFの生成・取得は要求しません。 |
+
+`--json` と `--only-json` は同時には指定できません。
+JSON出力は実行時のオプションで選びます。`json_output_dir` を設定しただけではJSONは保存しません。
+
+```shell
+# PDFとJSONの保存予定を確認する
+tkn-pdf-ocr run --source receipts --json --dry-run
+
+# PDFとJSONを保存する
+tkn-pdf-ocr run --source receipts --json
+
+# JSONだけを保存する
+tkn-pdf-ocr run --source receipts --only-json
+```
+
+`run` のJSON保存先は `sources.<ID>.json_output_dir` です。省略または `null` の場合は `output_dir` を使います。
+PDFと同じ出力名の拡張子を `.json` に変えます。例えば `output_suffix: "_ocr"` なら `receipt.pdf` から `receipt_ocr.json` を作ります。
+`recursive: true` の場合は、JSON出力先にも入力からの相対的なサブフォルダ構造を引き継ぎます。
+
+1つのPDFでは、保存先を直接指定できます。
+
+```shell
+# PDFの隣に document-searchable.json も保存する
+tkn-pdf-ocr convert "C:/path/to/document.pdf" --output "C:/path/to/document-searchable.pdf" --json
+
+# PDFとは別の場所へJSONを保存する
+tkn-pdf-ocr convert "C:/path/to/document.pdf" --output "C:/path/to/document-searchable.pdf" --json --json-output "C:/path/to/ocrJson/document.json"
+
+# 元PDFを保持してJSONだけを保存する
+tkn-pdf-ocr convert "C:/path/to/document.pdf" --only-json --json-output "C:/path/to/ocrJson/document.json"
+```
+
+`convert` は `sources` の保存先設定を使わず、指定したファイルへ保存します。
+`--json-output` を省略した場合は、`--output` のPDFと同じフォルダ・同じ名前で拡張子を `.json` にします。
+JSONだけの場合も `--output FILE.pdf --only-json` でこの保存先を決められます。`FILE.pdf` 自体は作成しません。
+
+JSONには `sourceFileName`、元PDFのハッシュ、解析対象ページ、および次の認識結果を含めます。
+
+- `TextRecognition.responsev2.predictionOutput.fullText`：Azureが返した全文。
+- `TextRecognition.responsev2.predictionOutput.results`：ページ別の文字列と行・位置情報。
+- `azureAnalyzeResult`：Azureの元解析結果。単語・座標・信頼度など、返された情報を保持します。
+
+AI BuilderのJSONに近い参照先で全文を利用できますが、AI BuilderのAPI応答を完全に再現するものではありません。認識文字や行順は異なる場合があります。
+
+`--json` はPDFのOCRに使う同じAzure解析からJSONを作成します。既存の文字ページとスキャンページが混在するPDFでは、JSONはOCR対象ページのみの場合があります。`analyzed_pages` と `source_pages` で対象範囲を確認できます。
+OCR対象ページがない検索可能PDFに `--json` を付けると、JSON用に全ページをAzureへ送信し、PDFはそのままコピーします。
+`--only-json` は、既に文字があるPDFも含めて全ページをAzureへ送信して解析します。PDFからのローカル文字抽出ではありません。`--dry-run` を付けた場合は送信・保存しません。
+
+JSON出力を後から有効にした場合、入力が残っていても同名のPDF出力があればスキップします。保持しているPDFからJSONだけを作る場合は `convert --only-json` を使えます。既存JSONも既定ではスキップし、置き換えるには `--overwrite` が必要です。
+保存の確認と途中停止時の扱いは[JSON出力の処理仕様](docs/reference/processing.md#optional-ocr-json)を参照してください。
+
 ### 1つのPDFを指定する
 
-`convert INPUT --output OUTPUT` で、処理対象と保存先を直接指定します。`--output` は必須です。
+`convert INPUT --output OUTPUT` で、処理対象と保存先を直接指定します。PDFを出力する場合は `--output` が必須です。JSONだけの場合は `--only-json --json-output FILE.json` を使えます。
 パスを実際のファイルに置き換えて実行してください。
 
-```powershell
+```shell
 tkn-pdf-ocr convert "C:\path\to\document.pdf" --output "C:\path\to\document-searchable.pdf"
 ```
 
@@ -272,12 +329,12 @@ sources:
 | 白紙・画像のないページ・安全に判定できない構造 | 保持。                  | 保持。                       |
 
 混在PDFでは、対象の画像ページだけをAzureへ送信し、その他のページは元のまま出力に含めます。
-名前付きキューでは、すでに検索可能なPDFはAzureへ送信せず、バイト列を変えずにコピーして、同じ検証・入力保持方針を適用します。
+JSON出力を指定しない名前付きキューでは、すでに検索可能なPDFはAzureへ送信せず、バイト列を変えずにコピーして、同じ検証・入力保持方針を適用します。
 判定不能なページ、文字が抽出できない文字ページ、OCR対象も文字もないPDF、OCR対象ページの一部でも文字が得られないPDFは `needs_review` とし、入力を残します。新しい出力は保存しません。白紙のスキャンもこの確認対象になります。
-`convert` は、対象ページがなければスキップします。
+JSON出力を指定しない `convert` は、対象ページがなければスキップします。
 同じページに通常の文字と画像が混在する場合は、そのページ全体を保持します。
 
-```powershell
+```shell
 tkn-pdf-ocr convert "C:\path\to\document.pdf" --output "C:\path\to\document-searchable.pdf" --redo-ocr
 ```
 
@@ -292,21 +349,15 @@ PDFファイル全体のバイト列の一致や、電子署名の有効性、PD
 実サンプル20件・21ページを新方式でAzure OCRし、元画像のデータと描画結果の一致を確認しました。出力容量は合計で元の約1.11倍です。
 選んだ100項目はすべて検索できました。全文の認識率を示すものではありません。[検証記録](docs/validation.md)に方法と範囲を記載しています。
 
-### 保存先に同名のPDFがある場合
+### 保存先に同名のファイルがある場合
 
-内容が異なる、または処理記録で確認できない既存PDFは、上書きせずエラーになります。
-`--overwrite` を付けると、既存PDFを同じフォルダの `.bak-<id>` ファイルへバックアップしてから置き換えます。
-元PDFを保存先に指定することはできません。`--overwrite` だけではOCR済みページの再OCRを有効にしません。必要な場合は `--redo-ocr --overwrite` と両方を指定します。
+PDFまたは要求したJSONの保存先に同名ファイルがあれば、既定では `skipped` として入力を保持します。Azureへの送信は行いません。`--overwrite` を指定した場合は、既存の出力を `.bak-<id>` ファイルにバックアップしてから置き換えます。元PDFを保存先に指定することはできません。
 
-完了済みで内容が一致するPDFは、`--overwrite` を付けても `unchanged` です。
-同じ元PDF・同じ処理条件でOCRをやり直す場合は、新しい保存先を指定してください。
+`--overwrite` はOCR済みページの再OCRを有効にしません。必要な場合は `--redo-ocr --overwrite` を指定します。
 
-### 中断した処理を再開する
+### 中断した処理を確認する
 
-同じコマンドを再実行すると、記録済みのAzureの処理IDを使って再開します。
-Azureが要求を受け付けたか不明な場合や、結果の取得期限が切れた場合は停止します。
-その場合は[再開・再送信の手順](docs/reference/processing.md#recovery-and-state)を確認してください。
-`--retry-uncertain` による再送信には、追加料金がかかる可能性があります。
+出力がない場合、再実行は新しいAzure解析を開始します。出力がある場合、再実行はそのPDFをスキップし、入力削除だけを自動で再試行しません。出力と入力を確認して手動で整理してください。Azureへの送信後に中断した場合、再送信で追加料金がかかることがあります。
 
 ### フォルダを定期的に処理する
 
@@ -319,7 +370,7 @@ Windowsのタスクスケジューラでは、次の内容を設定します。
 | 項目             | 設定                                                                |
 | ---------------- | ------------------------------------------------------------------- |
 | プログラム       | `Get-Command tkn-pdf-ocr` で確認した `tkn-pdf-ocr.exe` のパス。 |
-| 引数             | `run`。                                                           |
+| 引数             | `run`。対象を絞る場合は `run --source receipts`、JSONも保存する場合は `run --source receipts --json`。                                                           |
 | 開始するフォルダ | 手動実行で使用した作業フォルダ。                                    |
 | 実行ユーザー     | 手動実行と同じ設定・認証を利用できるWindowsユーザー。               |
 | 多重起動         | 前回の処理が続いている場合は、新しい処理を開始しない設定。          |
@@ -328,41 +379,35 @@ PCの電源が入り、スリープしていない間に実行できます。
 ブラウザ認証はキャッシュが有効な間は再利用できますが、再認証時にはユーザー操作が必要です。
 継続的な無人実行には、[無人実行用の認証](docs/reference/configuration.md#azure-options)を設定してください。
 
-## 入力削除と途中停止からの再開
+## 入力削除と途中停止
 
-`after_success: delete` は、出力の検証・保存・保存済みファイルのハッシュ確認・処理記録の保存後に、入力が変わっていないことを再確認して削除します。
-ごみ箱への移動ではなく、ファイルの削除です。確認するのはローカルの保存結果で、OneDriveクラウド側の同期完了は確認しません。
+`after_success: delete` は、要求した出力の保存とハッシュ検証が終わり、入力が変わっていないことを再確認してから入力を削除します。`--json` ではPDFとJSONの両方、`--only-json` ではJSONを確認します。削除はごみ箱を経由しません。OneDriveへの同期完了は確認しません。
 
-削除だけ失敗した場合は `cleanup_pending` になります。同じコマンドを再実行すると、OCRをやり直さず削除処理を再開します。
-ただし、出力が移動・変更されて確認できなければ `needs_review` とし、入力削除も出力再生成も行いません。
-保存直前・直後の中断で出力の有無を確定できない場合も同様です。後段のファイルを確認し、必要なら記録された出力を元の場所へ戻してください。通常の再試行のために履歴を消さないでください。
-削除直後に完了記録だけが残せなかった場合は、次回実行で入力が存在しないことを確認して記録を復旧します。
+入力削除に失敗した場合は `needs_review` となり、出力と入力が残ります。次回は同名出力があるためスキップします。入力の確認と整理は手動で行ってください。
 
 ## 実行結果の読み方
 
 進捗やエラーはコンソールの標準エラーへ、最終結果は標準出力へJSONで表示します。
-`run` と `convert` の結果には、次の件数が含まれます。
+この実行結果のJSONと、ファイル保存するOCR本文のJSONは別です。
+`run` と `convert` の結果には、次の件数が含まれます。件数は入力PDF単位です。`--json` でPDFとJSONを保存しても1件、`--only-json` ではJSONの保存結果として数えます。
 
 | 項目                | 意味                                                                          |
 | ------------------- | ----------------------------------------------------------------------------- |
-| `created`         | 新しく保存したPDF。                                                           |
-| `replaced`        | バックアップ後に置き換えたPDF。                                               |
-| `unchanged`       | 完了済みの内容と一致し、再処理しなかったPDF。                                 |
+| `created`         | 主な出力（PDF、`--only-json` ではJSON）を新規保存した入力PDF。                    |
+| `replaced`        | `--overwrite` により主な出力をバックアップして置き換えた入力PDF。             |
 | `skipped`         | 条件により処理を見送ったPDF。`files` 内の `reason` で理由を確認できます。 |
 | `planned`         | `--dry-run` で処理予定になったPDF。                                         |
 | `failed`          | 処理に失敗したPDF。`files` 内の `error` で原因を確認できます。            |
-| `needs_review`    | 検証や引き渡し状態の確認が必要なPDF。入力は保持します。                       |
-| `cleanup_pending` | 出力保存後、入力の削除だけが未完了のPDF。                                     |
+| `needs_review`    | 検証または入力削除の確認が必要なPDF。入力は保持します。                       |
 
-`skipped` の理由が `no_eligible_pages` ならOCR対象ページがありません。`page_kinds` にページ順の判定（`scan`、`ocr_text`、`native_text`、`no_scan_image`、`unsupported`）、`ocr_pages` にOCR対象のページ番号が表示されます。`input_not_stable_yet` は最終更新からの待機時間を満たしていない場合です。
+`skipped` の理由が `output_exists` または `json_output_exists` なら、同名の出力が既にあり、Azureへ送信せず入力を保持しました。`no_eligible_pages` ならOCR対象ページがありません。`page_kinds` にページ順の判定（`scan`、`ocr_text`、`native_text`、`no_scan_image`、`unsupported`）、`ocr_pages` にOCR対象のページ番号が表示されます。`input_not_stable_yet` は最終更新からの待機時間を満たしていない場合です。
 `sources` に対象ごとの件数、`files` に `source_id` と個別結果が表示されます。
-`failed: 0` でも、`needs_review` と `cleanup_pending` を確認してください。
-すべてのPDFが `skipped` または `unchanged` なら、新しいPDFは作成されません。
+`failed: 0` でも `needs_review` を確認してください。すべてのPDFが `skipped` なら、新しい出力は作成されません。
 
 `--dry-run` 以外では、実行レポートもファイルに保存します。
 保存先は結果の `run_report` に表示されます。強制終了などでレポートが残らない場合があります。
 
-終了コードは、`0` が正常終了または処理対象なし、`1` が1件以上のファイル失敗・要確認・削除未完了、`2` が引数・設定などのエラー、`130` が中断です。
+終了コードは、`0` が正常終了または処理対象なし、`1` が1件以上のファイル失敗・要確認、`2` が引数・設定などのエラー、`130` が中断です。
 
 ## コマンド一覧
 
@@ -373,6 +418,9 @@ PCの電源が入り、スリープしていない間に実行できます。
 | 設定ファイルを作る                   | `config init [PATH] [--dry-run] [--force]`           |
 | 有効な設定と取得元を確認する         | `config show`                                        |
 | 1つのPDFをOCRする                    | `convert INPUT --output OUTPUT`                      |
+| OCR結果をPDFとJSONで保存する | `run [--source ID] --json` |
+| OCR結果をJSONだけで保存する | `run [--source ID] --only-json` |
+| 1つのPDFからJSONだけを保存する | `convert INPUT --only-json --json-output FILE.json` |
 | `input_dir` のPDFをまとめてOCRする | `run [--source ID]`                                  |
 | PDFのページ数と文字の有無を調べる    | `verify INPUT [--expected-pages N] [--require-text]` |
 
@@ -380,7 +428,7 @@ PCの電源が入り、スリープしていない間に実行できます。
 共通の `--config PATH`、`--quiet`、`--verbose` はサブコマンドの前後に指定できます。
 `--quiet` は進捗を省いてエラーと結果のJSONを表示し、`--verbose` は診断情報を追加します。
 
-## 設定ファイルと処理記録の保存先
+## 設定ファイルと実行レポートの保存先
 
 設定は次の順に読み込み、後の値を優先します。`azure` と `sources.<ID>` 内の項目も個別に統合します。
 
@@ -390,16 +438,11 @@ PCの電源が入り、スリープしていない間に実行できます。
 4. `--config` で指定したファイル。
 5. コマンドに指定した個別のオプション。
 
-相対パスの基準は、設定ファイルの場所ではなく、コマンドを実行したフォルダです。
-`config init` は既存の編集済み設定を保護します。`--force` を付けると、バックアップしてから置き換えます。
-設定項目・形式・優先順位の詳細は[設定仕様](docs/reference/configuration.md)を参照してください。
+相対パスの基準は、設定ファイルの場所ではなく、コマンドを実行したフォルダです。`config init` は既存の編集済み設定を保護します。`--force` を付けるとバックアップしてから置き換えます。詳細は[設定仕様](docs/reference/configuration.md)を参照してください。
 
-再開用の処理記録、実行レポート、多重実行を防ぐロックファイルは、既定で `~/.tkn/pdf_ocr_pipeline/state/` に保存します。
-処理記録を削除すると、完了済みの判定や中断後の再開ができなくなるため、再試行のために削除しないでください。
-記録にはファイルのパスやハッシュが含まれます。OCRで認識した本文は保存しません。
-ブラウザ認証のアカウント識別情報は `~/.tkn/pdf_ocr_pipeline/authentication/` に保存します。
-アクセストークン等はOSで暗号化するアプリ専用キャッシュへ保存し、設定ファイルや処理記録へ書き込みません。
-保存構造と復旧への影響は[処理記録の仕様](docs/reference/processing.md#recovery-and-state)を参照してください。
+実行レポートと多重実行を防ぐロックファイルは、既定で `~/.tkn/pdf_ocr_pipeline/state/` に保存します。`runs/` は実行ごとの結果を記録する履歴で、次回の処理判断には使いません。`locks/` は同時実行を調整します。レポートにはファイルのパスやハッシュが含まれますが、OCR本文は保存しません。
+
+ブラウザ認証のアカウント識別情報は `~/.tkn/pdf_ocr_pipeline/authentication/` に保存します。アクセストークン等はOSで暗号化するアプリ専用キャッシュへ保存し、設定ファイルや実行レポートへ書き込みません。[処理仕様](docs/reference/processing.md#recovery-and-state)も参照してください。
 
 ## PDFの検査と制限
 
@@ -426,7 +469,7 @@ OCR後、保存前にCLIがPDFを読み取り、元PDFとのページ数・ペ�
 
 リポジトリを更新した後、以下の操作で再インストールして変更を反映します。
 
-```powershell
+```shell
 cd "C:\path\to\tkn_pdf_ocr_pipeline"
 uv tool install . --reinstall
 tkn-pdf-ocr --version
@@ -440,7 +483,7 @@ tkn-pdf-ocr --version
 開発時にソースの変更を直接反映する場合は、`uv tool install -e . --reinstall` を使います。
 テストとパッケージの確認は次の手順で行います。
 
-```powershell
+```shell
 cd "C:\path\to\tkn_pdf_ocr_pipeline"
 uv sync --locked
 uv run pytest

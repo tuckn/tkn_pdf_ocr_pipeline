@@ -95,13 +95,13 @@ class AzureRead:
         except httpx.HTTPError as exc:
             raise OcrError(
                 "Submission response was not received; acceptance is uncertain. "
-                "No automatic resubmission was made; inspect state before --retry-uncertain"
+                "A later run may submit again and incur another charge"
             ) from exc
         if response.status_code != 202:
             # Even errors are not automatically retried: ambiguous POSTs can incur duplicate cost.
             raise OcrError(
                 f"Azure submission returned HTTP {response.status_code}. "
-                "Check endpoint, authentication, role, tier and limits; then use --retry-uncertain"
+                "Check endpoint, authentication, role, tier and limits before rerunning"
             )
         operation = response.headers.get("Operation-Location", "")
         self._validate_operation(operation)
@@ -129,7 +129,9 @@ class AzureRead:
         for attempt in range(self.config.max_get_retries + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise OcrError("Azure polling timed out; rerun to resume the saved operation")
+                raise OcrError(
+                    "Azure polling timed out; rerunning may submit again and incur another charge"
+                )
             response = None
             try:
                 response = self.client.get(
@@ -142,15 +144,16 @@ class AzureRead:
                 if response.status_code not in {408, 429, 500, 502, 503, 504}:
                     if response.status_code == 404:
                         raise OcrError(
-                            "Azure result is unavailable/expired; inspect state, then use "
-                            "--retry-uncertain to submit again (additional charge)"
+                            "Azure result is unavailable/expired; rerunning may submit again "
+                            "and incur another charge"
                         )
                     raise OcrError(f"Azure result request returned HTTP {response.status_code}")
             except httpx.HTTPError:
                 pass
             if attempt == self.config.max_get_retries:
                 raise OcrError(
-                    "Azure result request failed after bounded GET retries; rerun to resume"
+                    "Azure result request failed after bounded GET retries; rerunning may "
+                    "submit again and incur another charge"
                 )
             delay = float(2**attempt)
             if response is not None:
@@ -163,7 +166,9 @@ class AzureRead:
     def _wait(seconds: float, deadline: float) -> None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise OcrError("Azure polling timed out; rerun to resume the saved operation")
+            raise OcrError(
+                "Azure polling timed out; rerunning may submit again and incur another charge"
+            )
         time.sleep(min(seconds, remaining))
 
     def collect(
@@ -184,9 +189,7 @@ class AzureRead:
             if status == "succeeded":
                 break
             if status in {"failed", "canceled"}:
-                raise OcrError(
-                    "Azure analysis failed; inspect service status before --retry-uncertain"
-                )
+                raise OcrError("Azure analysis failed; inspect service status before rerunning")
             if status not in {"notStarted", "running"}:
                 raise OcrError("Azure returned an unsupported operation status")
             if time.monotonic() - last_progress >= 30:

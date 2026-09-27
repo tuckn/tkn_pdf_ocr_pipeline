@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -13,25 +12,20 @@ from uuid import uuid4
 
 from filelock import FileLock, Timeout
 
-from . import __version__
-from .azure import MODEL_ID, AzureRead, Provider
+from .azure import AzureRead, Provider
 from .config import Config
 from .errors import OcrError
-from .io_utils import atomic_write, backup, file_hash, read_json, sha256, write_json
+from .io_utils import atomic_write, backup, file_hash, sha256, write_json
 from .pdf import PdfInfo, inspect_pdf, merge_ocr, prepare_upload, select_pages, validate_output
-from .queues import finish_handoff, handoff_path, publish_handoff, read_handoff, reconcile_handoffs
 from .text_json import build_text_json
 
 LOGGER = logging.getLogger("pdf_ocr_pipeline")
-# Image-preserving composition must never reuse the earlier rasterized output.
-PDF_PROCESSING_VERSION = "0.3.0"
 
 
 @dataclass(frozen=True)
 class Options:
     dry_run: bool = False
     overwrite: bool = False
-    retry_uncertain: bool = False
     redo_ocr: bool = False
     json: bool = False
     only_json: bool = False
@@ -154,20 +148,7 @@ def run_sources(
         config,
         options,
         provider_factory=provider_factory,
-        initial_results=reconcile_handoffs(configs, dry_run=options.dry_run),
     )
-
-
-def _fingerprint(config: Config, redo_ocr: bool = False) -> str:
-    conditions = {
-        "generator": PDF_PROCESSING_VERSION,
-        "model": MODEL_ID,
-        "endpoint": config.azure.endpoint,
-        "api_version": config.azure.api_version,
-        "locale": config.azure.locale,
-        "redo_ocr": redo_ocr,
-    }
-    return sha256(json.dumps(conditions, sort_keys=True).encode())
 
 
 def _snapshot(source: Path, config: Config) -> tuple[bytes, str, PdfInfo] | None:
@@ -186,34 +167,6 @@ def _snapshot(source: Path, config: Config) -> tuple[bytes, str, PdfInfo] | None
     if info.pages > config.max_pages:
         raise OcrError("Input exceeds max_pages")
     return data, sha256(data), info
-
-
-def _identity(source: Path, output: Path, digest: str, fingerprint: str) -> dict[str, str]:
-    return {
-        "source": str(source),
-        "output": str(output),
-        "source_sha256": digest,
-        "fingerprint": fingerprint,
-    }
-
-
-def _check_state(state: dict[str, Any], identity: dict[str, str]) -> None:
-    if any(state.get(k) != v for k, v in identity.items()):
-        raise OcrError("State identity does not match this job; preserve state and investigate")
-    if state.get("status") not in {"submitting", "submitted", "ready", "completed", "review"}:
-        raise OcrError("Unsupported job state; preserve state and investigate")
-    if (
-        state["status"] != "submitting"
-        and state.get("method") != "copy"
-        and not isinstance(state.get("operation_url"), str)
-    ):
-        raise OcrError("Job state is missing its Azure operation URL")
-    if state["status"] == "review" and not isinstance(state.get("review_reason"), str):
-        raise OcrError("Job state is missing its review reason")
-    if state["status"] in {"ready", "completed"} and not isinstance(
-        state.get("output_sha256"), str
-    ):
-        raise OcrError("Job state is missing its output hash")
 
 
 def _json_target(output: Path, config: Config, options: Options) -> Path | None:
@@ -296,45 +249,37 @@ def _process_locked(
     options: Options,
     provider_factory: Callable[[], Provider] | None,
 ) -> dict[str, Any]:
-    base: dict[str, Any] = {
-        "source": str(source),
-        "output": str(options.json_output if options.only_json else output),
-    }
-    if options.json_output and not options.only_json:
-        base["json_output"] = str(options.json_output)
+    json_path = options.json_output
+    primary = json_path if options.only_json else output
+    assert primary is not None
+    base: dict[str, Any] = {"source": str(source), "output": str(primary)}
+    if json_path and not options.only_json:
+        base["json_output"] = str(json_path)
     if config.source_id:
         base["source_id"] = config.source_id
+
+    existing = file_hash(primary)
+    existing_json = file_hash(json_path) if json_path and not options.only_json else None
+    if not options.overwrite and (existing is not None or existing_json is not None):
+        return {
+            **base,
+            "status": "skipped",
+            "reason": "output_exists" if existing is not None else "json_output_exists",
+            "source_action": "kept",
+        }
+
     snapshot = _snapshot(source, config)
     if snapshot is None:
         return {**base, "status": "skipped", "reason": "input_not_stable_yet"}
     data, digest, info = snapshot
-    handoff = handoff_path(config, source, digest) if config.source_id else None
-    if handoff:
-        record = read_handoff(handoff, config, source, digest)
-        if record:
-            return {**base, **finish_handoff(handoff, record, config, dry_run=options.dry_run)}
     if options.only_json:
-        assert options.json_output is not None
         return _json_only_locked(
-            source,
-            options.json_output,
-            config,
-            options,
-            provider_factory,
-            base,
-            data,
-            digest,
-            info,
-            handoff,
+            source, primary, config, options, provider_factory, base, data, digest, info, existing
         )
+
     pages = select_pages(info, redo_ocr=options.redo_ocr)
     base.update(
-        {
-            "pages": info.pages,
-            "text_pages": info.text_pages,
-            "page_kinds": info.page_kinds,
-            "ocr_pages": pages,
-        }
+        pages=info.pages, text_pages=info.text_pages, page_kinds=info.page_kinds, ocr_pages=pages
     )
     if config.source_id:
         unreadable = [
@@ -351,78 +296,7 @@ def _process_locked(
             }
     elif not pages and not options.json:
         return {**base, "status": "skipped", "reason": "no_eligible_pages"}
-    fingerprint = _fingerprint(config, options.redo_ocr)
-    if options.json:
-        fingerprint = sha256((fingerprint + ":json:" + str(options.json_output)).encode())
-    identity = _identity(source, output, digest, fingerprint)
-    job_id = sha256(json.dumps(identity, sort_keys=True).encode())
-    job_dir = config.state_dir / "jobs"
-    if config.source_id:
-        job_dir /= config.source_id
-    state_path = job_dir / f"{job_id}.json"
-    state = read_json(state_path)
-    if state:
-        _check_state(state, identity)
-        if state["status"] == "review" and not options.retry_uncertain:
-            return {
-                **base,
-                "status": "needs_review",
-                "reason": state["review_reason"],
-                "state": str(state_path),
-                "source_action": "kept",
-            }
-    existing = file_hash(output)
-    existing_json = file_hash(options.json_output) if options.json_output else None
-    if (
-        state
-        and state["status"] in {"ready", "completed"}
-        and existing == state.get("output_sha256")
-        and (
-            not options.json
-            or (existing_json is not None and existing_json == state.get("json_sha256"))
-        )
-    ):
-        if handoff and not options.dry_run:
-            assert existing is not None
-            record = publish_handoff(
-                handoff,
-                config,
-                source,
-                output,
-                digest,
-                existing,
-                json_output=options.json_output if options.json else None,
-                json_sha256=existing_json if options.json else None,
-            )
-            return {
-                **base,
-                "state": str(state_path),
-                **finish_handoff(handoff, record, config, dry_run=False),
-            }
-        if handoff:
-            return {
-                **base,
-                "status": "planned",
-                "action": "finish_handoff",
-                "azure_action": "none",
-                "source_action": config.after_success,
-            }
-        return {**base, "status": "unchanged", "state": str(state_path)}
-    if existing is not None and not options.overwrite:
-        raise OcrError(
-            f"Output exists and differs or has no matching state: {output}; use --overwrite"
-        )
-    if (
-        existing_json is not None
-        and not options.overwrite
-        and (not state or existing_json != state.get("json_sha256"))
-    ):
-        raise OcrError("JSON output exists and differs or has no matching state; use --overwrite")
-    if state and state["status"] == "submitting" and not options.retry_uncertain:
-        raise OcrError(
-            f"Submission acceptance is uncertain; inspect {state_path} before --retry-uncertain "
-            "(resubmission may incur another charge)"
-        )
+
     if (pages or options.json) and not config.azure.endpoint:
         raise OcrError("Set azure.endpoint before OCR; use config init and config show")
     if (
@@ -436,34 +310,14 @@ def _process_locked(
             **base,
             "status": "planned",
             "action": "replaced" if existing else "created",
-            "azure_action": (
-                "none"
-                if not pages and not options.json
-                else "resume"
-                if state and not options.retry_uncertain
-                else "submit"
-            ),
+            "azure_action": "submit" if pages or options.json else "none",
             "method": "ocr" if pages else "copy",
             "source_action": config.after_success,
             "preserve_images": True,
-            "state": str(state_path),
         }
     if not pages and not options.json:
-        state = {"schema_version": "1.0.0", **identity, "method": "copy", "status": "ready"}
-        return _publish(
-            source,
-            output,
-            config,
-            base,
-            digest,
-            data,
-            info,
-            [],
-            existing,
-            state_path,
-            state,
-            handoff,
-        )
+        return _publish(source, output, config, base, digest, data, info, existing, method="copy")
+
     analyzed_pages = pages or list(range(1, info.pages + 1))
     upload = prepare_upload(data, pages) if pages else data
     if len(upload) > config.max_file_mb * 1024 * 1024:
@@ -474,34 +328,12 @@ def _process_locked(
     provider = provider_factory() if provider_factory else AzureRead(config.azure)
     try:
         provider.prepare()
-        if state is None or options.retry_uncertain:
-            if file_hash(source) != digest:
-                raise OcrError("Input changed before upload")
-            state = {
-                "schema_version": "1.0.0",
-                **identity,
-                "status": "submitting",
-                "generator_version": __version__,
-                "model_id": MODEL_ID,
-                "api_version": config.azure.api_version,
-                "pages": info.pages,
-                "ocr_pages": pages,
-                "analyzed_pages": analyzed_pages,
-                "method": "ocr" if pages else "copy",
-                "source_bytes": len(data),
-                "upload_sha256": sha256(upload),
-                "started_at": datetime.now(UTC).isoformat(),
-            }
-            # Durable intent before the billable POST closes the accidental resubmission gap.
-            write_json(state_path, state)
-            LOGGER.info("Submitting %s (%s pages) to Azure", source.name, len(pages))
-            operation = provider.submit(upload, include_pdf=bool(pages))
-            state.update(status="submitted", operation_url=operation)
-            write_json(state_path, state)
-        else:
-            LOGGER.info("Resuming the saved Azure operation for %s", source.name)
+        if file_hash(source) != digest:
+            raise OcrError("Input changed before upload")
+        LOGGER.info("Submitting %s (%s pages) to Azure", source.name, len(analyzed_pages))
+        operation = provider.submit(upload, include_pdf=bool(pages))
         recognized, azure_text_pages, analysis = provider.collect(
-            state["operation_url"], include_pdf=bool(pages)
+            operation, include_pdf=bool(pages)
         )
         if pages:
             assert recognized is not None
@@ -512,16 +344,20 @@ def _process_locked(
             result = data
             text_pages = []
         if config.source_id and options.json and not azure_text_pages:
-            state.update(status="review", review_reason="json_without_text")
-            write_json(state_path, state)
             return {
                 **base,
                 "status": "needs_review",
                 "reason": "json_without_text",
-                "state": str(state_path),
                 "source_action": "kept",
             }
         result_info = validate_output(result, info, text_pages)
+        if config.source_id and any(n not in result_info.text_pages for n in pages):
+            return {
+                **base,
+                "status": "needs_review",
+                "reason": "ocr_pages_without_text",
+                "source_action": "kept",
+            }
         json_data = (
             build_text_json(
                 analysis,
@@ -534,16 +370,6 @@ def _process_locked(
             if options.json
             else None
         )
-        if config.source_id and any(n not in result_info.text_pages for n in pages):
-            state.update(status="review", review_reason="ocr_pages_without_text")
-            write_json(state_path, state)
-            return {
-                **base,
-                "status": "needs_review",
-                "reason": "ocr_pages_without_text",
-                "state": str(state_path),
-                "source_action": "kept",
-            }
         return _publish(
             source,
             output,
@@ -552,12 +378,9 @@ def _process_locked(
             digest,
             result,
             result_info,
-            text_pages,
             existing,
-            state_path,
-            state,
-            handoff,
-            json_path=options.json_output,
+            method="ocr" if pages else "copy",
+            json_path=json_path,
             json_data=json_data,
             existing_json=existing_json,
         )
@@ -575,60 +398,10 @@ def _json_only_locked(
     data: bytes,
     digest: str,
     info: PdfInfo,
-    handoff: Path | None,
+    existing: str | None,
 ) -> dict[str, Any]:
     pages = list(range(1, info.pages + 1))
     base.update(pages=info.pages, analyzed_pages=pages, method="json")
-    identity = _identity(
-        source, output, digest, sha256((_fingerprint(config) + ":json-only").encode())
-    )
-    job_id = sha256(json.dumps(identity, sort_keys=True).encode())
-    job_dir = config.state_dir / "jobs"
-    if config.source_id:
-        job_dir /= config.source_id
-    state_path = job_dir / f"{job_id}.json"
-    state = read_json(state_path)
-    if state:
-        _check_state(state, identity)
-        if state["status"] == "review" and not options.retry_uncertain:
-            return {
-                **base,
-                "status": "needs_review",
-                "reason": state["review_reason"],
-                "state": str(state_path),
-                "source_action": "kept",
-            }
-    existing = file_hash(output)
-    if (
-        state
-        and state["status"] in {"ready", "completed"}
-        and existing == state.get("output_sha256")
-    ):
-        if handoff and not options.dry_run:
-            assert existing is not None
-            record = publish_handoff(handoff, config, source, output, digest, existing)
-            return {
-                **base,
-                "state": str(state_path),
-                **finish_handoff(handoff, record, config, dry_run=False),
-            }
-        if handoff:
-            return {
-                **base,
-                "status": "planned",
-                "action": "finish_handoff",
-                "azure_action": "none",
-                "source_action": config.after_success,
-            }
-        return {**base, "status": "unchanged", "state": str(state_path)}
-    if existing is not None and not options.overwrite:
-        raise OcrError(
-            f"JSON output exists and differs or has no matching state: {output}; use --overwrite"
-        )
-    if state and state["status"] == "submitting" and not options.retry_uncertain:
-        raise OcrError(
-            f"Submission acceptance is uncertain; inspect {state_path} before --retry-uncertain"
-        )
     if not config.azure.endpoint:
         raise OcrError("Set azure.endpoint before OCR; use config init and config show")
     if config.azure.auth_mode == "key" and not os.environ.get(config.azure.key_env, "").strip():
@@ -638,43 +411,21 @@ def _json_only_locked(
             **base,
             "status": "planned",
             "action": "replaced" if existing else "created",
-            "azure_action": "resume" if state and not options.retry_uncertain else "submit",
+            "azure_action": "submit",
             "source_action": config.after_success,
-            "state": str(state_path),
         }
     provider = provider_factory() if provider_factory else AzureRead(config.azure)
     try:
         provider.prepare()
-        if state is None or options.retry_uncertain:
-            if file_hash(source) != digest:
-                raise OcrError("Input changed before upload")
-            state = {
-                "schema_version": "1.0.0",
-                **identity,
-                "status": "submitting",
-                "method": "json",
-                "generator_version": __version__,
-                "model_id": MODEL_ID,
-                "api_version": config.azure.api_version,
-                "pages": info.pages,
-                "ocr_pages": pages,
-                "source_bytes": len(data),
-                "upload_sha256": sha256(data),
-                "started_at": datetime.now(UTC).isoformat(),
-            }
-            write_json(state_path, state)
-            operation = provider.submit(data, include_pdf=False)
-            state.update(status="submitted", operation_url=operation)
-            write_json(state_path, state)
-        _pdf, text_pages, analysis = provider.collect(state["operation_url"], include_pdf=False)
+        if file_hash(source) != digest:
+            raise OcrError("Input changed before upload")
+        operation = provider.submit(data, include_pdf=False)
+        _pdf, text_pages, analysis = provider.collect(operation, include_pdf=False)
         if config.source_id and any(page not in text_pages for page in pages):
-            state.update(status="review", review_reason="json_pages_without_text")
-            write_json(state_path, state)
             return {
                 **base,
                 "status": "needs_review",
                 "reason": "json_pages_without_text",
-                "state": str(state_path),
                 "source_action": "kept",
             }
         result = build_text_json(
@@ -685,49 +436,17 @@ def _json_only_locked(
             analyzed_pages=pages,
             api_version=config.azure.api_version,
         )
-        if file_hash(source) != digest or file_hash(output) != existing:
-            raise OcrError("Input or JSON output changed during OCR; result was not published")
-        result_digest = sha256(result)
-        state.update(status="ready", output_sha256=result_digest, output_text_pages=text_pages)
-        write_json(state_path, state)
-        backup_path = backup(output, existing) if existing else None
-        publication = (
-            publish_handoff(handoff, config, source, output, digest, result_digest)
-            if handoff
-            else None
+        return _publish_bytes(
+            source,
+            output,
+            config,
+            base,
+            digest,
+            result,
+            existing,
+            output_text_pages=text_pages,
+            method="json",
         )
-        atomic_write(output, result, replace=existing is not None)
-        if file_hash(output) != result_digest:
-            raise OcrError("Saved JSON output is missing or changed; input retained")
-        state.update(status="completed", completed_at=datetime.now(UTC).isoformat())
-        if backup_path:
-            state["backup"] = str(backup_path)
-        write_json(state_path, state)
-        result_base = {
-            **base,
-            "status": "replaced" if existing else "created",
-            "state": str(state_path),
-            "output_sha256": result_digest,
-            "backup": str(backup_path) if backup_path else None,
-            "output_text_pages": text_pages,
-        }
-        if handoff and publication:
-            publication.update(
-                status="published",
-                published_at=datetime.now(UTC).isoformat(),
-                job_state=str(state_path),
-                page_count=info.pages,
-                output_text_pages=text_pages,
-                validation="passed",
-                method="json",
-            )
-            write_json(handoff, publication)
-            finished = finish_handoff(handoff, publication, config, dry_run=False)
-            status = (
-                result_base["status"] if finished["status"] == "unchanged" else finished["status"]
-            )
-            return {**result_base, **finished, "status": status}
-        return result_base
     finally:
         provider.close()
 
@@ -740,12 +459,44 @@ def _publish(
     digest: str,
     result: bytes,
     result_info: PdfInfo,
-    text_pages: list[int],
     existing: str | None,
-    state_path: Path,
-    state: dict[str, Any],
-    handoff: Path | None,
     *,
+    method: str,
+    json_path: Path | None = None,
+    json_data: bytes | None = None,
+    existing_json: str | None = None,
+) -> dict[str, Any]:
+    if not result_info.text_pages:
+        LOGGER.warning(
+            "OCR returned no extractable text: %s; inspect blank/illegible pages", source.name
+        )
+    return _publish_bytes(
+        source,
+        output,
+        config,
+        base,
+        digest,
+        result,
+        existing,
+        output_text_pages=result_info.text_pages,
+        method=method,
+        json_path=json_path,
+        json_data=json_data,
+        existing_json=existing_json,
+    )
+
+
+def _publish_bytes(
+    source: Path,
+    output: Path,
+    config: Config,
+    base: dict[str, Any],
+    digest: str,
+    result: bytes,
+    existing: str | None,
+    *,
+    output_text_pages: list[int],
+    method: str,
     json_path: Path | None = None,
     json_data: bytes | None = None,
     existing_json: str | None = None,
@@ -756,87 +507,61 @@ def _publish(
         raise OcrError("Output changed during OCR; result was not published")
     if json_path and file_hash(json_path) != existing_json:
         raise OcrError("JSON output changed during OCR; result was not published")
-    if not result_info.text_pages:
-        LOGGER.warning(
-            "OCR returned no extractable text: %s; inspect blank/illegible pages", source.name
-        )
     result_digest = sha256(result)
     json_digest = sha256(json_data) if json_data is not None else None
-    state.update(
-        status="ready",
-        output_sha256=result_digest,
-        output_text_pages=result_info.text_pages,
-        ocr_text_pages=text_pages,
-    )
-    if json_digest:
-        state["json_sha256"] = json_digest
-    write_json(state_path, state)
     backup_path = backup(output, existing) if existing else None
-    json_backup = (
-        backup(json_path, existing_json)
-        if json_path and existing_json and existing_json != json_digest
-        else None
-    )
-    if file_hash(output) != existing:
-        raise OcrError("Output changed before publication")
-    record = (
-        publish_handoff(
-            handoff,
-            config,
-            source,
-            output,
-            digest,
-            result_digest,
-            json_output=json_path,
-            json_sha256=json_digest,
-        )
-        if handoff
-        else None
-    )
+    json_backup = backup(json_path, existing_json) if json_path and existing_json else None
+    if file_hash(source) != digest or file_hash(output) != existing:
+        raise OcrError("Input or output changed before publication")
+    if json_path and file_hash(json_path) != existing_json:
+        raise OcrError("JSON output changed before publication")
     if json_path and json_data is not None:
-        if file_hash(json_path) != existing_json:
-            raise OcrError("JSON output changed before publication")
-        if existing_json != json_digest:
-            atomic_write(json_path, json_data, replace=existing_json is not None)
+        atomic_write(json_path, json_data, replace=existing_json is not None)
         if file_hash(json_path) != json_digest:
             raise OcrError("Saved JSON output is missing or changed; input retained")
+    if file_hash(output) != existing:
+        raise OcrError("Output changed before publication")
     atomic_write(output, result, replace=existing is not None)
     if file_hash(output) != result_digest:
         raise OcrError("Saved output is missing or changed; input retained")
     if json_path and file_hash(json_path) != json_digest:
         raise OcrError("Saved JSON output is missing or changed; input retained")
-    state.update(status="completed", completed_at=datetime.now(UTC).isoformat())
-    if backup_path:
-        state["backup"] = str(backup_path)
-    if json_backup:
-        state["json_backup"] = str(json_backup)
-    write_json(state_path, state)
-    result_base = {
+    published = {
         **base,
         "status": "replaced" if existing else "created",
-        "state": str(state_path),
-        "backup": str(backup_path) if backup_path else None,
         "output_sha256": result_digest,
-        "json_sha256": json_digest,
-        "json_backup": str(json_backup) if json_backup else None,
-        "output_text_pages": result_info.text_pages,
-        "method": state.get("method", "ocr"),
+        "output_text_pages": output_text_pages,
+        "method": method,
     }
-    if handoff and record:
-        record.update(
-            status="published",
-            published_at=datetime.now(UTC).isoformat(),
-            job_state=str(state_path),
-            page_count=result_info.pages,
-            output_text_pages=result_info.text_pages,
-            validation="passed",
-            method=state.get("method", "ocr"),
-        )
-        write_json(handoff, record)
-        finished = finish_handoff(handoff, record, config, dry_run=False)
-        status = result_base["status"] if finished["status"] == "unchanged" else finished["status"]
-        return {**result_base, **finished, "status": status}
-    return result_base
+    if backup_path:
+        published["backup"] = str(backup_path)
+    if json_digest:
+        published["json_sha256"] = json_digest
+    if json_backup:
+        published["json_backup"] = str(json_backup)
+    if config.source_id:
+        published["source_action"] = "kept"
+        if config.after_success == "delete":
+            if file_hash(source) != digest:
+                return {
+                    **published,
+                    "status": "needs_review",
+                    "reason": "input_changed_before_delete",
+                }
+            if file_hash(output) != result_digest or (
+                json_path and file_hash(json_path) != json_digest
+            ):
+                return {
+                    **published,
+                    "status": "needs_review",
+                    "reason": "output_changed_before_delete",
+                }
+            try:
+                source.unlink()
+            except OSError:
+                return {**published, "status": "needs_review", "reason": "input_delete_failed"}
+            published["source_action"] = "deleted"
+    return published
 
 
 def run(
@@ -860,9 +585,8 @@ def _run_jobs(
     options: Options,
     *,
     provider_factory: Callable[[], Provider] | None = None,
-    initial_results: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    results: list[dict[str, Any]] = list(initial_results or [])
+    results: list[dict[str, Any]] = []
     for index, (source, output, item) in enumerate(jobs, 1):
         LOGGER.info("Processing %s/%s: %s", index, len(jobs), source.name)
         try:
@@ -884,12 +608,10 @@ def _run_jobs(
         for status in (
             "created",
             "replaced",
-            "unchanged",
             "skipped",
             "planned",
             "failed",
             "needs_review",
-            "cleanup_pending",
         )
     }
     report: dict[str, Any] = {

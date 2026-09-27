@@ -29,11 +29,9 @@ def test_end_to_end_and_idempotence(config):
     assert inspect_pdf(output.read_bytes()).text_pages == [1]
     assert source.read_bytes() == original
     second = process_file(source, output, config, Options(), provider_factory=lambda: provider)
-    assert second["status"] == "unchanged"
+    assert second["status"] == "skipped" and second["reason"] == "output_exists"
     assert len(provider.submissions) == 1
-    state = json.loads(Path(first["state"]).read_text())
-    assert state["status"] == "completed"
-    assert "synthetic-key" not in json.dumps(state)
+    assert "state" not in first
 
 
 def test_dry_run_is_readonly_no_provider(config):
@@ -55,8 +53,8 @@ def test_conflict_backup_and_no_source_overwrite(config):
     output.parent.mkdir()
     output.write_bytes(make_pdf("manually edited"))
     original = output.read_bytes()
-    with pytest.raises(OcrError, match="Output exists"):
-        process_file(source, output, config, Options())
+    skipped = process_file(source, output, config, Options())
+    assert skipped["status"] == "skipped" and skipped["reason"] == "output_exists"
     provider = FakeProvider()
     result = process_file(
         source, output, config, Options(overwrite=True), provider_factory=lambda: provider
@@ -67,7 +65,7 @@ def test_conflict_backup_and_no_source_overwrite(config):
         process_file(source, source, config, Options(overwrite=True))
 
 
-def test_resume_does_not_resubmit(config):
+def test_failed_collection_resubmits_when_no_output_exists(config):
     source, output = input_file(config)
     provider = FakeProvider(fail_collect=True)
     with pytest.raises(OcrError):
@@ -75,22 +73,17 @@ def test_resume_does_not_resubmit(config):
     assert not output.exists()
     provider.fail_collect = False
     process_file(source, output, config, Options(), provider_factory=lambda: provider)
-    assert len(provider.submissions) == 1
+    assert len(provider.submissions) == 2
 
 
-def test_unknown_submission_requires_explicit_retry(config):
+def test_failed_submission_can_be_retried(config):
     source, output = input_file(config)
     provider = FakeProvider(fail_submit=True)
     with pytest.raises(OcrError):
         process_file(source, output, config, Options(), provider_factory=lambda: provider)
     provider.fail_submit = False
-    with pytest.raises(OcrError, match="uncertain"):
-        process_file(source, output, config, Options(), provider_factory=lambda: provider)
-    assert len(provider.submissions) == 1
-    process_file(
-        source, output, config, Options(retry_uncertain=True), provider_factory=lambda: provider
-    )
-    assert len(provider.submissions) == 2
+    result = process_file(source, output, config, Options(), provider_factory=lambda: provider)
+    assert result["status"] == "created" and output.exists()
 
 
 @pytest.mark.parametrize("data", [b"not pdf", make_pdf(pages=2), make_pdf()])
@@ -120,7 +113,7 @@ def test_detect_concurrent_changes(config, changed):
         assert not output.exists()
 
 
-def test_atomic_publish_failure_resume(config, monkeypatch):
+def test_publish_failure_resubmits_when_output_is_absent(config, monkeypatch):
     import pdf_ocr_pipeline.pipeline as module
 
     source, output = input_file(config)
@@ -132,18 +125,7 @@ def test_atomic_publish_failure_resume(config, monkeypatch):
     assert not output.exists()
     monkeypatch.setattr(module, "atomic_write", real)
     process_file(source, output, config, Options(), provider_factory=lambda: provider)
-    assert len(provider.submissions) == 1
-
-
-def test_ready_state_recovers_after_output_publication(config):
-    source, output = input_file(config)
-    provider = FakeProvider()
-    result = process_file(source, output, config, Options(), provider_factory=lambda: provider)
-    state_path = Path(result["state"])
-    state = json.loads(state_path.read_text())
-    state["status"] = "ready"
-    state_path.write_text(json.dumps(state))
-    assert process_file(source, output, config, Options())["status"] == "unchanged"
+    assert len(provider.submissions) == 2
 
 
 def test_recursive_discovery_case_and_overlap(config):

@@ -38,7 +38,7 @@ and refuses edited content. `--force` backs up the existing file before replacin
 
 | Key | Default | Meaning / values |
 | --- | --- | --- |
-| `state_dir` | `~/.tkn/pdf_ocr_pipeline/state` | Durable jobs, run reports, and locks; share between scheduled/manual runs. |
+| `state_dir` | `~/.tkn/pdf_ocr_pipeline/state` | Per-run reports and locks; use the same directory for scheduled and manual runs. |
 | `min_age_seconds` | `30` | Nonnegative age threshold for **each file**, including `convert`. Newer files are skipped. |
 | `max_pages` | `2000` | Integer 1..2000; pre-upload file page ceiling. |
 | `max_file_mb` | `500` | Integer 1..500, interpreted as MiB (1,048,576 bytes); source and prepared-upload ceiling. |
@@ -66,9 +66,9 @@ An empty overlay does not clear lower-layer sources. Create the input directory 
 running; output directories are created when a PDF is saved. Config reads and dry-run
 remain read-only. `run --source default` selects the implicit queue.
 A single folder pair is configured as one source, using the same model as multiple queues.
-Each key is a stable source ID: 1–64 lowercase ASCII letters, digits, `_` or `-`, starting
-with a letter/digit. Windows device names are rejected. IDs namespace job and delivery
-records; renaming one loses deduplication against the previous ID.
+Each key is a source ID: 1–64 lowercase ASCII letters, digits, `_` or `-`, starting
+with a letter/digit. Windows device names are rejected. IDs select sources and label run
+results. Renaming an ID does not change how existing outputs are handled.
 
 | Key under `sources.<id>` | Default | Meaning |
 | --- | --- | --- |
@@ -77,7 +77,7 @@ records; renaming one loses deduplication against the previous ID.
 | `input_dir` | `null` | Required for each enabled source at run time. |
 | `output_dir` | `null` | Required for each enabled source at run time. |
 | `json_output_dir` | `null` | Optional JSON destination; null uses `output_dir`. |
-| `after_success` | `keep` | `keep` or `delete`; deletion only after saved-output verification and durable recording. |
+| `after_success` | `keep` | `keep` or `delete`; deletion only after every requested output is saved and verified. |
 | `output_suffix` | `""` | Literal filename suffix before `.pdf`; `_ocr` produces `name_ocr.pdf`. Path separators, control characters and invalid Windows filename characters are rejected. |
 
 Top-level Azure options, `min_age_seconds`, limits and `state_dir` are shared.
@@ -97,9 +97,9 @@ use `json_output_dir` for each source. Omission creates no JSON.
 JSON output may share the PDF output folder or be nested within it. Both output
 roots must stay separate from input/state roots and from other sources.
 `after_success: delete` removes the source only after every requested output
-has been saved and verified. A completed named-source handoff remains complete
-after downstream files are moved; use `convert --only-json` on a retained PDF
-for deliberate later extraction.
+has been saved and verified. If an output is already present, the input is skipped
+and retained unless `--overwrite` is specified. Use `convert --only-json` on a retained
+PDF when only a new JSON output is needed.
 
 ```yaml
 schema_version: "3.0.0"
@@ -156,8 +156,8 @@ they include account information. The Azure SDK owns the encrypted token-cache l
 not verify resource-level permissions. `--reauthenticate` prompts for account selection
 even when the cached token works. `--dry-run` never initializes a credential, reads or
 writes its cache, opens a browser, or makes a network request. Normal OCR prompts for
-sign-in automatically when needed, before recording a billable submission intent.
-`config show`, skipped documents and unchanged completed jobs do not authenticate.
+sign-in automatically when needed, before the billable submission.
+`config show` and skipped documents do not authenticate.
 
 Browser sign-in requires the browser and a local loopback callback. Its fixed timeout
 is 300 seconds. The SDK development application's client ID is used, as in the similar
@@ -184,20 +184,16 @@ Sovereign-cloud scopes are not implemented.
 `--endpoint`, `--auth-mode` and `--locale` override their corresponding Azure keys.
 The model is fixed to `prebuilt-read`; it is not a deployment name.
 
-## Reprocessing consequences
+## Existing outputs and repeated runs
 
-Source SHA-256, canonical input/output paths and the processing fingerprint identify an OCR job.
-Named sources additionally partition jobs by source ID. A separate handoff identity uses
-source ID, canonical input path and input SHA-256; it excludes output path, suffix and OCR
-settings. Completed handoffs prevent automatic republication after a downstream move.
-Use `convert` with an explicit destination for a deliberate new conversion of a retained PDF.
-The fingerprint includes PDF-processing revision, model, endpoint, API version, locale,
-the explicit `--redo-ocr` flag. Changing these may create a different job.
-Conflicting existing output still requires `--overwrite`.
-Changing timeouts/authentication credentials does not force another OCR request.
-The 0.3.0 image-preserving update uses a new processing revision. Earlier rasterized
-outputs are not reused as completed results; their files and state remain intact.
+`run` and `convert` check every requested output before sending to Azure. If any
+requested output already exists, the file is `skipped` and its input is retained.
+`--overwrite` explicitly replaces existing outputs after creating backups. It does
+not enable `--redo-ocr`.
 
-Moving/deleting state removes knowledge needed for deduplication and resumption.
-An existing PDF without matching state is protected as a conflict; it is not silently
-trusted or replaced. Back up state alongside outputs if recovery matters.
+No past run report or source ID affects the next processing decision. If an output
+is moved away while the input remains, a later run can submit the input again and
+create a new output. If Azure accepted a submission but the CLI stopped before
+publishing an output, the next run can submit again and incur another charge.
+An output left after failed input deletion causes a skip on the next run; inspect
+and remove the input manually when appropriate.

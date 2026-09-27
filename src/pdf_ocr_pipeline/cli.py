@@ -83,12 +83,7 @@ def _ocr_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Replace a conflicting OUTPUT with a backup; never overwrite the source",
-    )
-    parser.add_argument(
-        "--retry-uncertain",
-        action="store_true",
-        help="Resubmit an uncertain/expired/review OCR job; never override handoff review",
+        help="Replace existing output file(s) after making backups; default is skip",
     )
 
 
@@ -209,7 +204,6 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     options = Options(
         dry_run=args.dry_run,
         overwrite=args.overwrite,
-        retry_uncertain=args.retry_uncertain,
         redo_ocr=args.redo_ocr,
         json=args.json,
         only_json=args.only_json,
@@ -240,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.debug("Dispatching %s", args.command)
         result = execute(args)
         counts = result.get("counts", {})
-        failed = sum(counts.get(key, 0) for key in ("failed", "needs_review", "cleanup_pending"))
+        failed = sum(counts.get(key, 0) for key in ("failed", "needs_review"))
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if failed:
             logger.error("Finished with %s file(s) requiring attention", failed)
@@ -248,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         log_success(logger, "Completed %s", args.command)
         return 0
     except KeyboardInterrupt:
-        logger.error("Interrupted; rerun to resume accepted jobs")
+        logger.error("Interrupted; inspect outputs before rerunning")
         print(json.dumps({"status": "interrupted"}))
         return 130
     except (OcrError, OSError) as exc:
