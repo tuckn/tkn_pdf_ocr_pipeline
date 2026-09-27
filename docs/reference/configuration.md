@@ -76,6 +76,7 @@ records; renaming one loses deduplication against the previous ID.
 | `recursive` | `false` | Include subfolders for this source; preserve relative paths in its output. |
 | `input_dir` | `null` | Required for each enabled source at run time. |
 | `output_dir` | `null` | Required for each enabled source at run time. |
+| `json_output_dir` | `null` | Optional JSON destination; null uses `output_dir`. |
 | `after_success` | `keep` | `keep` or `delete`; deletion only after saved-output verification and durable recording. |
 | `output_suffix` | `""` | Literal filename suffix before `.pdf`; `_ocr` produces `name_ocr.pdf`. Path separators, control characters and invalid Windows filename characters are rejected. |
 
@@ -86,8 +87,19 @@ Paths still resolve against the working directory; recursive runs preserve relat
 `run --source ID` selects one enabled source; unknown or disabled IDs are errors. All
 sources disabled is a successful empty run. Individual file failures do not stop other files.
 Top-level `input_dir` / `output_dir` and CLI `--input-dir` / `--output-dir` are not accepted.
-`convert INPUT --output OUTPUT` requires an explicit output file, is independent of named
-queues, and always keeps input.
+`convert INPUT --output OUTPUT` requires an explicit PDF output unless
+`--only-json --json-output FILE.json` is used. It is independent of named
+queues and always keeps input. `--json` creates a JSON alongside the PDF,
+or at `--json-output FILE.json`. `run --json` and `run --only-json`
+use `json_output_dir` for each source. Omission creates no JSON.
+`--dry-run` does not save either output or call Azure.
+
+JSON output may share the PDF output folder or be nested within it. Both output
+roots must stay separate from input/state roots and from other sources.
+`after_success: delete` removes the source only after every requested output
+has been saved and verified. A completed named-source handoff remains complete
+after downstream files are moved; use `convert --only-json` on a retained PDF
+for deliberate later extraction.
 
 ```yaml
 schema_version: "3.0.0"
@@ -96,6 +108,7 @@ sources:
     recursive: false
     input_dir: C:/path/to/receipts/1_rawPDF
     output_dir: C:/path/to/receipts/2_ocrPDF
+    json_output_dir: C:/path/to/receipts/2_ocrJSON
     after_success: delete
     output_suffix: "_ocr"
   business-cards:

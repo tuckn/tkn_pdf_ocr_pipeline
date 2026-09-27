@@ -34,7 +34,22 @@ def read_handoff(path: Path, config: Config, source: Path, digest: str) -> dict[
         or record.get("source_action") not in {"pending", "kept", "deleted"}
     ):
         raise OcrError("Invalid handoff record; preserve state and investigate")
+    if ("json_output" in record) != ("json_sha256" in record):
+        raise OcrError("Invalid JSON handoff record; preserve state and investigate")
+    if "json_output" in record and (
+        not isinstance(record["json_output"], str)
+        or not Path(record["json_output"]).is_absolute()
+        or not isinstance(record["json_sha256"], str)
+    ):
+        raise OcrError("Invalid JSON handoff record; preserve state and investigate")
     return record
+
+
+def _outputs_match(record: dict[str, Any]) -> bool:
+    return file_hash(Path(record["output"])) == record["output_sha256"] and (
+        "json_output" not in record
+        or file_hash(Path(record["json_output"])) == record["json_sha256"]
+    )
 
 
 def finish_handoff(
@@ -49,6 +64,9 @@ def finish_handoff(
         "output": record["output"],
         "output_sha256": record["output_sha256"],
     }
+    if "json_output" in record:
+        base["json_output"] = record["json_output"]
+        base["json_sha256"] = record["json_sha256"]
     # Completed delivery is durable even if the downstream consumer moved the PDF.
     if record["status"] == "completed" and (
         record["source_action"] == "deleted" or config.after_success == "keep"
@@ -60,7 +78,7 @@ def finish_handoff(
             "source_action": "kept",
             "recorded_source_action": record["source_action"],
         }
-    if file_hash(Path(record["output"])) != record["output_sha256"]:
+    if not _outputs_match(record):
         return {
             **base,
             "status": "needs_review",
@@ -89,7 +107,7 @@ def finish_handoff(
         write_json(path, record)
         try:
             # Recheck after persisting intent. Cooperating runs also hold the source lock.
-            if file_hash(Path(record["output"])) != record["output_sha256"]:
+            if not _outputs_match(record):
                 return {
                     **base,
                     "status": "needs_review",
@@ -131,6 +149,9 @@ def publish_handoff(
     output: Path,
     digest: str,
     result_digest: str,
+    *,
+    json_output: Path | None = None,
+    json_sha256: str | None = None,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
         "schema_version": "1.0.0",
@@ -144,6 +165,10 @@ def publish_handoff(
         "source_action": "pending",
         "started_at": datetime.now(UTC).isoformat(),
     }
+    if json_output is not None:
+        assert json_sha256 is not None
+        record["json_output"] = str(json_output)
+        record["json_sha256"] = json_sha256
     # Persist before making the final filename visible to a downstream consumer.
     write_json(path, record)
     return record

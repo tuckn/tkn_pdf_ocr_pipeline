@@ -21,6 +21,7 @@ sources: {}
 #     recursive: false
 #     input_dir: C:/path/to/receipts/1_rawPDF
 #     output_dir: C:/path/to/receipts/2_ocrPDF
+#     json_output_dir: null  # Optional; defaults to output_dir.
 #     after_success: delete
 #     output_suffix: "_ocr"
 #   catalogs:

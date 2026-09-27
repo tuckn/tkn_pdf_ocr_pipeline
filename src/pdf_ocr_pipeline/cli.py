@@ -47,6 +47,17 @@ def _common(parser: argparse.ArgumentParser) -> None:
 def _ocr_options(parser: argparse.ArgumentParser) -> None:
     _common(parser)
     parser.add_argument("--state-dir", help="Persistent job/lock directory")
+    output_mode = parser.add_mutually_exclusive_group()
+    output_mode.add_argument(
+        "--json",
+        action="store_true",
+        help="Also save OCR text JSON (default: PDF only)",
+    )
+    output_mode.add_argument(
+        "--only-json",
+        action="store_true",
+        help="Analyze all input pages and save JSON without creating a PDF",
+    )
     parser.add_argument(
         "--redo-ocr",
         action="store_true",
@@ -113,7 +124,8 @@ def parser() -> Parser:
     convert = commands.add_parser("convert", help="Upload one PDF and save its searchable copy")
     _ocr_options(convert)
     convert.add_argument("input", type=Path)
-    convert.add_argument("--output", type=Path, required=True, help="Exact destination .pdf path")
+    convert.add_argument("--output", type=Path, help="Exact destination .pdf path")
+    convert.add_argument("--json-output", type=Path, help="Exact destination .json path")
     batch = commands.add_parser(
         "run", help="Process enabled queues once; suitable for Task Scheduler"
     )
@@ -194,10 +206,23 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             finally:
                 credential.close()
         return result
-    options = Options(args.dry_run, args.overwrite, args.retry_uncertain, args.redo_ocr)
+    options = Options(
+        dry_run=args.dry_run,
+        overwrite=args.overwrite,
+        retry_uncertain=args.retry_uncertain,
+        redo_ocr=args.redo_ocr,
+        json=args.json,
+        only_json=args.only_json,
+        json_output=getattr(args, "json_output", None),
+    )
     if args.command == "run":
         return run_sources(config, options, args.source)
-    return run([(args.input, args.output)], config, options)
+    if args.json_output and not (args.json or args.only_json):
+        raise OcrError("--json-output requires --json or --only-json")
+    if args.output is None and not (args.only_json and args.json_output):
+        raise OcrError("convert requires --output, or --json-output with --only-json")
+    output = args.output or args.json_output.with_suffix(".pdf")
+    return run([(args.input, output)], config, options)
 
 
 def main(argv: list[str] | None = None) -> int:

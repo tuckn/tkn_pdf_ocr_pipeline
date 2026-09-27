@@ -13,6 +13,19 @@ available in Git; 0.2.0 is described in the existing validation record. No separ
 0.4.0 snapshot or version-specific record was found, so changes between 0.3.0 and
 0.5.0 are grouped under 0.5.0 rather than assigned speculatively to 0.4.0.
 
+## 0.6.0 — 2026-09-27
+
+### Added
+
+- Optional JSON output from the same Azure prebuilt-read analysis used for
+  searchable PDF creation. JSON is not produced unless requested.
+- JSON-only mode analyzes every source page without creating a new PDF.
+  Single-file conversion accepts an exact JSON path; named sources accept a
+  JSON output directory, falling back to the PDF output folder.
+- JSON includes AI Builder-like full text and page lines, the original Azure
+  analyze result, and source/page provenance.
+- Queue handoff verifies both requested outputs before optional source deletion.
+
 ## 0.5.0 — 2026-09-22
 
 ### Added

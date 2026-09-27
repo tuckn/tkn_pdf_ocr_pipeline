@@ -37,11 +37,33 @@ All files in a batch are independent. File failures are collected; later files c
 Structural setup errors (such as overlapping roots) stop the command.
 Jobs that cannot be accepted or completed are never represented as successful outputs.
 
+## Optional OCR JSON
+
+`--json` saves a `.json` file with the searchable PDF. It uses the
+same Azure analysis request and selected OCR pages. If the input has no eligible
+OCR pages, a named source sends the full PDF for text analysis and copies the
+existing searchable PDF. For a mixed PDF, `analyzed_pages` lists the
+pages present in JSON; it may be fewer than `source_pages`.
+`--only-json` sends the full input PDF and does not publish a PDF.
+
+JSON includes `TextRecognition.responsev2.predictionOutput.fullText`,
+page-level `fullPageText` and line `text`/`boundingBox`, plus
+the original `azureAnalyzeResult`. The envelope resembles AI Builder
+recognition content but is not an AI Builder API response. Text and line order
+may differ; compare representative receipts before changing downstream parsing.
+
+JSON is written atomically and verified by hash. A named queue records both
+requested output paths/hashes and checks both before configured input deletion.
+Interrupted or ambiguous delivery requires review under the handoff rules.
+In a named queue, JSON-only analysis with a page lacking recognized words is
+held for review and the input remains in place.
+
 ## Azure HTTP contract
 
 Public Azure resource origin: `https://<resource-name>.cognitiveservices.azure.com`.
 
 - POST `/documentintelligence/documentModels/prebuilt-read:analyze?api-version=2024-11-30&output=pdf`
+- JSON-only requests omit the PDF output parameter and use the analysis result GET only.
 - Body: raw PDF bytes, `Content-Type: application/pdf`; optional `locale` query.
 - Expected response: HTTP 202 with `Operation-Location`.
 - GET the operation URL until `status=succeeded`.
@@ -50,7 +72,10 @@ Public Azure resource origin: `https://<resource-name>.cognitiveservices.azure.c
 The operation URL must match the configured origin, model path and API version.
 Redirects are disabled, so credentials are not forwarded to a different origin.
 Credentials and raw Azure error bodies/OCR text are excluded from application logs/state.
-Analysis JSON is used transiently for page/word validation, not persisted.
+Analysis JSON is used for page/word validation. When `--json` or
+`--only-json` is requested, it is saved in the source-aligned OCR JSON
+file. Without either option, the analysis remains transient.
+`--only-json` omits the PDF output request and downloads no searchable PDF from Azure.
 
 GET transport failures and HTTP 408/429/500/502/503/504 have bounded retries.
 Exponential delay honors numeric Retry-After up to 60 seconds per wait, subject to the

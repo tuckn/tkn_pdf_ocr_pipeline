@@ -22,8 +22,10 @@ LOGGER = logging.getLogger("pdf_ocr_pipeline")
 
 class Provider(Protocol):
     def prepare(self) -> None: ...
-    def submit(self, data: bytes) -> str: ...
-    def collect(self, operation_url: str) -> tuple[bytes, list[int]]: ...
+    def submit(self, data: bytes, *, include_pdf: bool = True) -> str: ...
+    def collect(
+        self, operation_url: str, *, include_pdf: bool = True
+    ) -> tuple[bytes | None, list[int], dict[str, Any]]: ...
     def close(self) -> None: ...
 
 
@@ -77,8 +79,10 @@ class AzureRead:
     def prepare(self) -> None:
         self._headers()
 
-    def submit(self, data: bytes) -> str:
-        params = {"api-version": self.config.api_version, "output": "pdf"}
+    def submit(self, data: bytes, *, include_pdf: bool = True) -> str:
+        params = {"api-version": self.config.api_version}
+        if include_pdf:
+            params["output"] = "pdf"
         if self.config.locale:
             params["locale"] = self.config.locale
         try:
@@ -162,7 +166,9 @@ class AzureRead:
             raise OcrError("Azure polling timed out; rerun to resume the saved operation")
         time.sleep(min(seconds, remaining))
 
-    def collect(self, operation_url: str) -> tuple[bytes, list[int]]:
+    def collect(
+        self, operation_url: str, *, include_pdf: bool = True
+    ) -> tuple[bytes | None, list[int], dict[str, Any]]:
         self._validate_operation(operation_url)
         deadline = time.monotonic() + self.config.poll_timeout_seconds
         last_progress = 0.0
@@ -200,6 +206,8 @@ class AzureRead:
             text_pages = [page["pageNumber"] for page in pages if page.get("words")]
         except (KeyError, TypeError, ValueError) as exc:
             raise OcrError("Azure analysis result has invalid model/page metadata") from exc
+        if not include_pdf:
+            return None, text_pages, analysis
         parsed = urlsplit(operation_url)
         pdf_url = urlunsplit(parsed._replace(path=parsed.path + "/pdf"))
         pdf_response = self._get(pdf_url, deadline)
@@ -210,7 +218,7 @@ class AzureRead:
 
         if inspect_pdf(data).pages != len(pages):
             raise OcrError("Azure analysis page count does not match downloaded PDF")
-        return data, text_pages
+        return data, text_pages, analysis
 
     def close(self) -> None:
         self.client.close()

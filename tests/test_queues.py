@@ -215,8 +215,12 @@ def test_interruption_after_delete_recovers_record(tmp_path, monkeypatch):
 
 def test_no_recognized_words_requires_review_and_no_retry(tmp_path):
     class NoWords(FakeProvider):
-        def collect(self, operation_url):
-            return make_pdf(), []
+        def collect(self, operation_url, *, include_pdf=True):
+            return (
+                make_pdf(),
+                [],
+                {"modelId": "prebuilt-read", "pages": [{"pageNumber": 1, "lines": []}]},
+            )
 
     config, source, output = queued(tmp_path)
     first = only_result(config, provider=NoWords())

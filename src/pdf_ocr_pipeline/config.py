@@ -20,6 +20,7 @@ SOURCE_DEFAULTS: dict[str, Any] = {
     "recursive": False,
     "input_dir": None,
     "output_dir": None,
+    "json_output_dir": None,
     "after_success": "keep",
     "output_suffix": "",
 }
@@ -53,6 +54,7 @@ class SourceConfig:
     enabled: bool
     input_dir: Path | None
     output_dir: Path | None
+    json_output_dir: Path | None = None
     after_success: str = "keep"
     output_suffix: str = ""
     recursive: bool = False
@@ -69,6 +71,7 @@ class Config:
     # Derived context for a selected source; these are not top-level settings.
     input_dir: Path | None = None
     output_dir: Path | None = None
+    json_output_dir: Path | None = None
     source_id: str | None = None
     after_success: str = "keep"
     output_suffix: str = ""
@@ -206,13 +209,20 @@ def resolve_config(
         values["azure"]["endpoint"] = values["azure"]["endpoint"].rstrip("/")
     queue_configs: dict[str, SourceConfig] = {}
     for source_id, settings in values["sources"].items():
-        for key in ("input_dir", "output_dir"):
+        for key in ("input_dir", "output_dir", "json_output_dir"):
             if settings[key] is not None:
                 settings[key] = str(_path(settings[key], cwd))
         queue_configs[source_id] = SourceConfig(
-            **{k: v for k, v in settings.items() if k not in {"input_dir", "output_dir"}},
+            **{
+                k: v
+                for k, v in settings.items()
+                if k not in {"input_dir", "output_dir", "json_output_dir"}
+            },
             input_dir=Path(settings["input_dir"]) if settings["input_dir"] else None,
             output_dir=Path(settings["output_dir"]) if settings["output_dir"] else None,
+            json_output_dir=Path(settings["json_output_dir"])
+            if settings["json_output_dir"]
+            else None,
         )
     config = Config(
         **{k: v for k, v in values.items() if k not in {"azure", "state_dir", "sources"}},

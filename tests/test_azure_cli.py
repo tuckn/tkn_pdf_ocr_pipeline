@@ -42,8 +42,9 @@ def test_real_adapter_transport_contract(config):
     try:
         provider.prepare()
         operation = provider.submit(make_pdf())
-        data, pages = provider.collect(operation)
+        data, pages, analysis = provider.collect(operation)
         assert pages == [1] and data.startswith(b"%PDF")
+        assert analysis["modelId"] == "prebuilt-read"
         assert [r.method for r in requests] == ["POST", "GET", "GET"]
     finally:
         provider.close()
@@ -190,3 +191,52 @@ def test_removed_folder_options_and_missing_output_rejected(argv, capsys):
 def test_recursive_is_configured_per_source_not_by_cli(option, capsys):
     assert main(["run", option]) == 2
     assert json.loads(capsys.readouterr().out)["status"] == "failed"
+
+
+def test_analysis_only_does_not_download_pdf(config):
+    requests = []
+
+    def handle(request):
+        requests.append(request.url.path)
+        return httpx.Response(
+            200,
+            json={
+                "status": "succeeded",
+                "analyzeResult": {
+                    "modelId": "prebuilt-read",
+                    "content": "text",
+                    "pages": [
+                        {
+                            "pageNumber": 1,
+                            "words": [{"content": "text"}],
+                            "lines": [{"content": "text"}],
+                        }
+                    ],
+                },
+            },
+        )
+
+    provider = AzureRead(config.azure, transport=httpx.MockTransport(handle))
+    try:
+        pdf, text_pages, analysis = provider.collect(OP, include_pdf=False)
+        assert pdf is None and text_pages == [1]
+        assert analysis["content"] == "text"
+        assert len(requests) == 1 and not requests[0].endswith("/pdf")
+    finally:
+        provider.close()
+
+
+def test_json_only_submission_omits_pdf_output(config):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(202, headers={"Operation-Location": OP})
+
+    provider = AzureRead(config.azure, transport=httpx.MockTransport(handle))
+    try:
+        assert provider.submit(make_pdf(), include_pdf=False) == OP
+        assert "output" not in requests[0].url.params
+        assert requests[0].url.params["api-version"] == "2024-11-30"
+    finally:
+        provider.close()

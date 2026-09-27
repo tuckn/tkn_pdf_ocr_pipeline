@@ -103,21 +103,23 @@ class FakeProvider:
         self.fail_collect = fail_collect
         self.callback = callback
         self.submissions = []
+        self.pdf_requests = []
         self.collections = 0
         self.preparations = 0
 
     def prepare(self):
         self.preparations += 1
 
-    def submit(self, data):
+    def submit(self, data, *, include_pdf=True):
         from pdf_ocr_pipeline.errors import OcrError
 
         self.submissions.append(data)
+        self.pdf_requests.append(include_pdf)
         if self.fail_submit:
             raise OcrError("uncertain")
         return "https://example.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read/analyzeResults/job?api-version=2024-11-30"
 
-    def collect(self, operation_url):
+    def collect(self, operation_url, *, include_pdf=True):
         from pdf_ocr_pipeline.errors import OcrError
 
         self.collections += 1
@@ -125,7 +127,18 @@ class FakeProvider:
             raise OcrError("temporary result failure")
         if self.callback:
             self.callback()
-        return self.output, [1]
+        analysis = {
+            "modelId": "prebuilt-read",
+            "content": "Receipt 123",
+            "pages": [
+                {
+                    "pageNumber": 1,
+                    "words": [{"content": "Receipt"}, {"content": "123"}],
+                    "lines": [{"content": "Receipt 123", "polygon": [0, 0, 1, 0, 1, 1, 0, 1]}],
+                }
+            ],
+        }
+        return self.output if include_pdf else None, [1], analysis
 
     def close(self):
         pass
