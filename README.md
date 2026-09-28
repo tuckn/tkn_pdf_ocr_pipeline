@@ -132,12 +132,12 @@ azure:
   auth_mode: browser
 ```
 
-| 項目               | 設定する内容                                                                                  |
-| ------------------ | --------------------------------------------------------------------------------------------- |
-| `input_dir`      | OCR対象のPDFがあるフォルダ。                                                                  |
-| `output_dir`     | OCR後のPDFを保存するフォルダ。                                                                |
-| `json_output_dir` | JSONの保存先。省略または `null` ならPDFと同じ出力フォルダ。設定だけではJSON出力は有効になりません。 |
-| `azure.endpoint` | 利用するAzureリソースのエンドポイント。`<resource-name>` を実際のリソース名に置き換えます。 |
+| 項目                | 設定する内容                                                                                         |
+| ------------------- | ---------------------------------------------------------------------------------------------------- |
+| `input_dir`       | OCR対象のPDFがあるフォルダ。                                                                         |
+| `output_dir`      | OCR後のPDFを保存するフォルダ。                                                                       |
+| `json_output_dir` | JSONの保存先。省略または`null` ならPDFと同じ出力フォルダ。設定だけではJSON出力は有効になりません。 |
+| `azure.endpoint`  | 利用するAzureリソースのエンドポイント。`<resource-name>` を実際のリソース名に置き換えます。        |
 
 `sources` の各項目に入力・出力フォルダを指定します。`receipts` などのIDは対象の選択と実行結果の表示に使います。IDを変更しても過去の実行結果は現在の処理判断に使いません。
 この例の `receipts` は、検証後に入力を削除します。残す場合は `after_success: keep` にします。省略時も `keep` です。
@@ -206,10 +206,11 @@ OCR後のPDFは `output_dir` に保存されます。
 
 ## 用途に応じた使い方
 
-### 設定した対象を選んで実行する（run --source）
+### 設定したソースを選んで実行する（run --source）
 
-`--source` の後ろには、設定ファイルの `sources` 直下にあるIDを1つ指定します。
-上記の設定では `receipts` がレシート用、`catalogs` がカタログ用のIDです。`xxxx` は説明用の仮名であり、実際のIDに置き換えます。フォルダのパスやPDFのファイル名は指定しません。
+`run` コマンドでは通常、config.yaml の `sources` に指定したすべてのソースに対して、OCR化が実行されます。
+特定のソースのみOCR化を実行する場合は、`run` コマンドオプションの `--source <source-id>` を指定します。
+例えば、以下のような指定となります。
 
 ```shell
 # receipts の入力フォルダだけを確認する
@@ -219,20 +220,20 @@ tkn-pdf-ocr run --source receipts --dry-run
 tkn-pdf-ocr run --source receipts
 ```
 
-`--source` を省略した `run` は、`enabled: true` の対象をすべて処理します。
-存在しないIDや `enabled: false` のIDを指定するとエラーになります。上記の `catalogs` を実行するには、入力フォルダを用意して `enabled: true` に変更してください。
+なお、存在しないsource-idや `enabled: false` のIDを指定するとエラーになります。
+`--source` を省略した `run` でも、`enabled: false` に設定したソースは対象としません。
+
 独自の `sources` がない場合は、既定の対象を `run --source default` で指定できます。
-IDと有効・無効の状態は `tkn-pdf-ocr config show` の `settings.sources` で確認できます。
 
 対象を1つに絞っても、有効な全対象のフォルダ配置を検査します。別の対象にフォルダの重複がある場合も設定の修正が必要です。
-`--source` はフォルダ処理の `run` 用です。1つのPDFを直接指定する場合は `convert` を使います。
+1つのPDFを直接指定する場合は `convert` を使います。
 
 ### OCR結果をJSONファイルに保存する
 
-| 指定 | 保存するファイル |
-| --- | --- |
-| なし | 検索可能PDFのみ。 |
-| `--json` | 検索可能PDFとOCR結果のJSON。 |
+| 指定            | 保存するファイル                                           |
+| --------------- | ---------------------------------------------------------- |
+| なし            | 検索可能PDFのみ。                                          |
+| `--json`      | 検索可能PDFとOCR結果のJSON。                               |
 | `--only-json` | OCR結果のJSONのみ。検索可能PDFの生成・取得は要求しません。 |
 
 `--json` と `--only-json` は同時には指定できません。
@@ -367,13 +368,13 @@ LinuxでのCLIの動作は未検証です。
 
 Windowsのタスクスケジューラでは、次の内容を設定します。
 
-| 項目             | 設定                                                                |
-| ---------------- | ------------------------------------------------------------------- |
-| プログラム       | `Get-Command tkn-pdf-ocr` で確認した `tkn-pdf-ocr.exe` のパス。 |
-| 引数             | `run`。対象を絞る場合は `run --source receipts`、JSONも保存する場合は `run --source receipts --json`。                                                           |
-| 開始するフォルダ | 手動実行で使用した作業フォルダ。                                    |
-| 実行ユーザー     | 手動実行と同じ設定・認証を利用できるWindowsユーザー。               |
-| 多重起動         | 前回の処理が続いている場合は、新しい処理を開始しない設定。          |
+| 項目             | 設定                                                                                                         |
+| ---------------- | ------------------------------------------------------------------------------------------------------------ |
+| プログラム       | `Get-Command tkn-pdf-ocr` で確認した `tkn-pdf-ocr.exe` のパス。                                          |
+| 引数             | `run`。対象を絞る場合は `run --source receipts`、JSONも保存する場合は `run --source receipts --json`。 |
+| 開始するフォルダ | 手動実行で使用した作業フォルダ。                                                                             |
+| 実行ユーザー     | 手動実行と同じ設定・認証を利用できるWindowsユーザー。                                                        |
+| 多重起動         | 前回の処理が続いている場合は、新しい処理を開始しない設定。                                                   |
 
 PCの電源が入り、スリープしていない間に実行できます。
 ブラウザ認証はキャッシュが有効な間は再利用できますが、再認証時にはユーザー操作が必要です。
@@ -391,14 +392,14 @@ PCの電源が入り、スリープしていない間に実行できます。
 この実行結果のJSONと、ファイル保存するOCR本文のJSONは別です。
 `run` と `convert` の結果には、次の件数が含まれます。件数は入力PDF単位です。`--json` でPDFとJSONを保存しても1件、`--only-json` ではJSONの保存結果として数えます。
 
-| 項目                | 意味                                                                          |
-| ------------------- | ----------------------------------------------------------------------------- |
-| `created`         | 主な出力（PDF、`--only-json` ではJSON）を新規保存した入力PDF。                    |
-| `replaced`        | `--overwrite` により主な出力をバックアップして置き換えた入力PDF。             |
-| `skipped`         | 条件により処理を見送ったPDF。`files` 内の `reason` で理由を確認できます。 |
-| `planned`         | `--dry-run` で処理予定になったPDF。                                         |
-| `failed`          | 処理に失敗したPDF。`files` 内の `error` で原因を確認できます。            |
-| `needs_review`    | 検証または入力削除の確認が必要なPDF。入力は保持します。                       |
+| 項目             | 意味                                                                          |
+| ---------------- | ----------------------------------------------------------------------------- |
+| `created`      | 主な出力（PDF、`--only-json` ではJSON）を新規保存した入力PDF。              |
+| `replaced`     | `--overwrite` により主な出力をバックアップして置き換えた入力PDF。           |
+| `skipped`      | 条件により処理を見送ったPDF。`files` 内の `reason` で理由を確認できます。 |
+| `planned`      | `--dry-run` で処理予定になったPDF。                                         |
+| `failed`       | 処理に失敗したPDF。`files` 内の `error` で原因を確認できます。            |
+| `needs_review` | 検証または入力削除の確認が必要なPDF。入力は保持します。                       |
 
 `skipped` の理由が `output_exists` または `json_output_exists` なら、同名の出力が既にあり、Azureへ送信せず入力を保持しました。`no_eligible_pages` ならOCR対象ページがありません。`page_kinds` にページ順の判定（`scan`、`ocr_text`、`native_text`、`no_scan_image`、`unsupported`）、`ocr_pages` にOCR対象のページ番号が表示されます。`input_not_stable_yet` は最終更新からの待機時間を満たしていない場合です。
 `sources` に対象ごとの件数、`files` に `source_id` と個別結果が表示されます。
@@ -418,9 +419,9 @@ PCの電源が入り、スリープしていない間に実行できます。
 | 設定ファイルを作る                   | `config init [PATH] [--dry-run] [--force]`           |
 | 有効な設定と取得元を確認する         | `config show`                                        |
 | 1つのPDFをOCRする                    | `convert INPUT --output OUTPUT`                      |
-| OCR結果をPDFとJSONで保存する | `run [--source ID] --json` |
-| OCR結果をJSONだけで保存する | `run [--source ID] --only-json` |
-| 1つのPDFからJSONだけを保存する | `convert INPUT --only-json --json-output FILE.json` |
+| OCR結果をPDFとJSONで保存する         | `run [--source ID] --json`                           |
+| OCR結果をJSONだけで保存する          | `run [--source ID] --only-json`                      |
+| 1つのPDFからJSONだけを保存する       | `convert INPUT --only-json --json-output FILE.json`  |
 | `input_dir` のPDFをまとめてOCRする | `run [--source ID]`                                  |
 | PDFのページ数と文字の有無を調べる    | `verify INPUT [--expected-pages N] [--require-text]` |
 
