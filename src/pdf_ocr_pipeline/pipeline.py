@@ -298,7 +298,7 @@ def _process_locked(
         return {**base, "status": "skipped", "reason": "no_eligible_pages"}
 
     if (pages or options.json) and not config.azure.endpoint:
-        raise OcrError("Set azure.endpoint before OCR; use config init and config show")
+        raise OcrError("Set azure.endpoint before OCR; use config init and config list")
     if (
         (pages or options.json)
         and config.azure.auth_mode == "key"
@@ -403,7 +403,7 @@ def _json_only_locked(
     pages = list(range(1, info.pages + 1))
     base.update(pages=info.pages, analyzed_pages=pages, method="json")
     if not config.azure.endpoint:
-        raise OcrError("Set azure.endpoint before OCR; use config init and config show")
+        raise OcrError("Set azure.endpoint before OCR; use config init and config list")
     if config.azure.auth_mode == "key" and not os.environ.get(config.azure.key_env, "").strip():
         raise OcrError(f"Set environment variable {config.azure.key_env}")
     if options.dry_run:

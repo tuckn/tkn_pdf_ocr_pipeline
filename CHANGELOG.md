@@ -13,6 +13,15 @@ available in Git; 0.2.0 is described in the existing validation record. No separ
 0.4.0 snapshot or version-specific record was found, so changes between 0.3.0 and
 0.5.0 are grouped under 0.5.0 rather than assigned speculatively to 0.4.0.
 
+## Unreleased
+
+- Replace `config show` with `config list`. Default output is one copyable `key=value`
+  entry per line, with dotted nested keys, indexed list items and single Windows path
+  separators. `--json` retains the structured configuration result. Listing logs at INFO
+  level and remains read-only.
+- Reinstall with `uv tool install . --reinstall`. Update scripts using `config show` to
+  `config list --json` if they parse JSON. No configuration schema migration is needed.
+
 ## 0.7.0 — 2026-09-28
 
 ### Changed

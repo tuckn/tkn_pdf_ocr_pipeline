@@ -173,7 +173,7 @@ def test_default_credential_excludes_all_developer_tools(config, monkeypatch):
     )
 
 
-def test_login_dry_run_and_config_show_do_not_touch_auth(browser_config, monkeypatch, capsys):
+def test_login_dry_run_and_config_list_do_not_touch_auth(browser_config, monkeypatch, capsys):
     monkeypatch.setattr(
         auth, "InteractiveBrowserCredential", Mock(side_effect=AssertionError("no auth"))
     )
@@ -183,7 +183,7 @@ def test_login_dry_run_and_config_show_do_not_touch_auth(browser_config, monkeyp
     before = sorted(Path.cwd().rglob("*"))
     assert main(["auth", "login", "--dry-run"]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "planned"
-    assert main(["config", "show"]) == 0
+    assert main(["config", "list", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["settings"]["azure"]["auth_mode"] == "browser"
     assert sorted(Path.cwd().rglob("*")) == before
 

@@ -146,14 +146,17 @@ def test_cli_errors_are_json(capsys):
     assert "[ERROR]" in result.err
 
 
-def test_config_show_and_logging_modes(capsys):
-    assert main(["config", "show", "--quiet"]) == 0
+def test_config_list_and_logging_modes(capsys):
+    assert main(["config", "list", "--quiet"]) == 0
     result = capsys.readouterr()
     assert not result.err
-    assert json.loads(result.out)["effective_schema_version"] == "3.0.0"
-    assert main(["--verbose", "config", "show"]) == 0
-    assert "[DEBUG]" in capsys.readouterr().err
-    assert main(["--quiet", "config", "show", "--verbose"]) == 2
+    assert "effective_schema_version=3.0.0" in result.out.splitlines()
+    assert main(["--verbose", "config", "list"]) == 0
+    result = capsys.readouterr()
+    assert "[DEBUG]" in result.err
+    assert "[INFO] Showing resolved configuration" in result.err
+    assert "[SUCCESS]" not in result.err
+    assert main(["--quiet", "config", "list", "--verbose"]) == 2
 
 
 @pytest.mark.parametrize(
@@ -163,6 +166,7 @@ def test_config_show_and_logging_modes(capsys):
         ["convert", "--help"],
         ["run", "--help"],
         ["config", "init", "--help"],
+        ["config", "list", "--help"],
         ["verify", "--help"],
         ["--version"],
     ],

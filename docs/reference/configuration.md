@@ -27,8 +27,18 @@ Unknown keys and incorrect types fail. Configuration reads never migrate/write a
 
 Every file declares `schema_version: "3.0.0"`; 3.0.x patches are accepted.
 Missing versions, prereleases and other major/minor versions are rejected.
-`config show` reports source versions, effective settings and the winning source for each
+`config list` reports source versions, effective settings and the winning source for each
 leaf value. Configuration reads do not rewrite files or read key/token values.
+
+The default stdout is one `key=value` entry per line, like `git config --list`.
+Nested mappings use dots and list items use `[0]` indices. Empty lists/maps appear as
+`[]`/`{}`, booleans as `true`/`false`, and unset values as `null`. Strings have no JSON
+quotes; Windows path separators remain single backslashes. Control characters are escaped
+so each entry occupies one line. `config list --json` retains the structured JSON result,
+including source versions, the effective schema version and migration metadata.
+Both formats keep logs on stderr and emit `[INFO] Showing resolved configuration`
+(unless `--quiet`). Listing never authenticates or creates/updates settings, state, cache
+or reports.
 
 `config init [PATH]` creates the example, returns `unchanged` for identical bytes,
 and refuses edited content. `--force` backs up the existing file before replacing it.
@@ -59,7 +69,7 @@ No option silently interprets an empty value as another path or profile.
 - `output_dir`: `~/.tkn/pdf_ocr_pipeline/data/searchable`
 - `enabled: true`, `recursive: false`, `after_success: keep`, `output_suffix: ""`
 
-`config show` exposes the resolved paths and marks their winning source as `built-in`.
+`config list` exposes the resolved paths and marks their winning source as `built-in`.
 The fallback is added only after merging, never alongside user-defined sources. Explicit
 sources with missing paths still fail at run time; disabled sources do not trigger fallback.
 An empty overlay does not clear lower-layer sources. Create the input directory before
@@ -122,7 +132,7 @@ azure:
   endpoint: https://<resource-name>.cognitiveservices.azure.com
 ```
 
-`config show` includes the resolved source mapping and winning source for each leaf value.
+`config list` includes the resolved source mapping and winning source for each leaf value.
 Cross-source folder validation and required enabled paths are checked by `run --dry-run`.
 Deletion is not a recycle-bin operation. Successful local storage does not confirm OneDrive
 cloud synchronization. Named queues can copy already-searchable PDFs without Azure; they
@@ -157,7 +167,7 @@ not verify resource-level permissions. `--reauthenticate` prompts for account se
 even when the cached token works. `--dry-run` never initializes a credential, reads or
 writes its cache, opens a browser, or makes a network request. Normal OCR prompts for
 sign-in automatically when needed, before the billable submission.
-`config show` and skipped documents do not authenticate.
+`config list` and skipped documents do not authenticate.
 
 Browser sign-in requires the browser and a local loopback callback. Its fixed timeout
 is 300 seconds. The SDK development application's client ID is used, as in the similar

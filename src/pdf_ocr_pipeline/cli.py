@@ -9,6 +9,7 @@ from typing import Any, NoReturn
 from . import __version__
 from .auth import SCOPE, BrowserCredential
 from .config import SCHEMA_VERSION, init_config, resolve_config, user_config_path
+from .config_output import config_lines
 from .errors import OcrError
 from .logging_config import configure_logging, log_success
 from .pdf import inspect_pdf
@@ -33,7 +34,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
         "--quiet",
         action="store_true",
         default=argparse.SUPPRESS,
-        help="Only ERROR/CRITICAL logs; JSON output is retained",
+        help="Only ERROR/CRITICAL logs; result output is retained",
     )
     group.add_argument(
         "-v",
@@ -98,8 +99,11 @@ def parser() -> Parser:
     config = commands.add_parser("config", help="Create or inspect YAML settings")
     _common(config)
     sub = config.add_subparsers(dest="config_command", required=True)
-    show = sub.add_parser("show", help="Show merged non-secret settings and winning sources")
-    _common(show)
+    listing = sub.add_parser(
+        "list", help="List merged non-secret settings and winning sources as key=value lines"
+    )
+    _common(listing)
+    listing.add_argument("--json", action="store_true", help="Print the full configuration as JSON")
     init = sub.add_parser("init", help="Create the packaged example in the user settings directory")
     _common(init)
     init.add_argument("path", nargs="?", type=Path)
@@ -235,11 +239,18 @@ def main(argv: list[str] | None = None) -> int:
         result = execute(args)
         counts = result.get("counts", {})
         failed = sum(counts.get(key, 0) for key in ("failed", "needs_review"))
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        listing = args.command == "config" and args.config_command == "list"
+        if listing and not args.json:
+            print("\n".join(config_lines(result)))
+        else:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
         if failed:
             logger.error("Finished with %s file(s) requiring attention", failed)
             return 1
-        log_success(logger, "Completed %s", args.command)
+        if listing:
+            logger.info("Showing resolved configuration")
+        else:
+            log_success(logger, "Completed %s", args.command)
         return 0
     except KeyboardInterrupt:
         logger.error("Interrupted; inspect outputs before rerunning")

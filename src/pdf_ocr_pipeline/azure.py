@@ -34,7 +34,7 @@ class AzureRead:
         self, config: AzureConfig, *, transport: httpx.BaseTransport | None = None
     ) -> None:
         if not config.endpoint:
-            raise OcrError("Set azure.endpoint in config; run config init and config show")
+            raise OcrError("Set azure.endpoint in config; run config init and config list")
         self.config = config
         self.endpoint = config.endpoint.rstrip("/")
         self.credential: TokenCredential | None = None

@@ -121,7 +121,7 @@ reading order, selection alignment and image appearance.
 
 ## Implementation boundaries
 
-- `cli.py`: command parsing, UTF-8 JSON/stdout and log/stderr contract.
+- `cli.py`: command parsing, UTF-8 results on stdout (JSON or `config list` entries) and logs on stderr.
 - `config.py`: independently validated configuration layers and packaged defaults.
 - `pipeline.py`: page selection, locks, validation and publication.
 - `azure.py`: Azure authentication and HTTP; mockable without live credentials.

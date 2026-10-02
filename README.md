@@ -154,11 +154,16 @@ azure:
 保存した設定が反映されているか確認します。
 
 ```shell
-tkn-pdf-ocr config show
+tkn-pdf-ocr config list
+
+# 自動処理などで構造化JSONが必要な場合
+tkn-pdf-ocr config list --json
 ```
 
 `settings` に有効な設定、`winning_sources` に各値の取得元が表示されます。
 このコマンドは設定の確認用で、Azureへの接続確認は行いません。
+
+`config list` は1行に1つの `key=value` を表示します。入れ子のキーは `.`、配列の要素は `[0]` などで表し、Windowsパスはそのままコピーできます。`--json` を付けると構造化JSONを表示します。設定・state・cache・reportは作成・更新しません。
 
 ### 4. ブラウザでAzureにログインする
 
@@ -172,7 +177,7 @@ tkn-pdf-ocr auth login
 
 次回からはアプリ専用の暗号化キャッシュを使い、再認証が必要になった場合だけブラウザを開きます。
 アカウントを選び直すには `tkn-pdf-ocr auth login --reauthenticate` を使います。
-`auth login --dry-run` と `config show` は、ブラウザ起動や認証キャッシュへのアクセスを行いません。
+`auth login --dry-run` と `config list` は、ブラウザ起動や認証キャッシュへのアクセスを行いません。
 
 利用先のテナントを指定する場合は `azure.tenant_id` を設定します。
 無人実行用の認証やAPIキーを使用する場合は、[認証方式の設定](docs/reference/configuration.md#azure-options)を参照してください。
@@ -388,7 +393,7 @@ PCの電源が入り、スリープしていない間に実行できます。
 
 ## 実行結果の読み方
 
-進捗やエラーはコンソールの標準エラーへ、最終結果は標準出力へJSONで表示します。
+進捗やエラーはコンソールの標準エラーへ、最終結果は標準出力へJSONで表示します。`config list` は既定で `key=value` 形式、`config list --json` はJSON形式です。設定一覧のログは `[INFO] Showing resolved configuration` です。
 この実行結果のJSONと、ファイル保存するOCR本文のJSONは別です。
 `run` と `convert` の結果には、次の件数が含まれます。件数は入力PDF単位です。`--json` でPDFとJSONを保存しても1件、`--only-json` ではJSONの保存結果として数えます。
 
@@ -417,7 +422,7 @@ PCの電源が入り、スリープしていない間に実行できます。
 | 目的                                 | コマンド                                               |
 | ------------------------------------ | ------------------------------------------------------ |
 | 設定ファイルを作る                   | `config init [PATH] [--dry-run] [--force]`           |
-| 有効な設定と取得元を確認する         | `config show`                                        |
+| 有効な設定と取得元を確認する         | `config list [--json]`                                        |
 | 1つのPDFをOCRする                    | `convert INPUT --output OUTPUT`                      |
 | OCR結果をPDFとJSONで保存する         | `run [--source ID] --json`                           |
 | OCR結果をJSONだけで保存する          | `run [--source ID] --only-json`                      |
@@ -427,7 +432,7 @@ PCの電源が入り、スリープしていない間に実行できます。
 
 各コマンドの `--help` でオプションを確認できます。
 共通の `--config PATH`、`--quiet`、`--verbose` はサブコマンドの前後に指定できます。
-`--quiet` は進捗を省いてエラーと結果のJSONを表示し、`--verbose` は診断情報を追加します。
+`--quiet` は進捗を省いてエラーと結果を表示し、`--verbose` は診断情報を追加します。
 
 ## 設定ファイルと実行レポートの保存先
 
