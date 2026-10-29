@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Any, NoReturn
@@ -9,19 +8,35 @@ from typing import Any, NoReturn
 from . import __version__
 from .auth import SCOPE, BrowserCredential
 from .config import SCHEMA_VERSION, init_config, resolve_config, user_config_path
-from .config_output import config_lines
 from .errors import OcrError
 from .logging_config import configure_logging, log_success
+from .output import emit, public_result
 from .pdf import inspect_pdf
 from .pipeline import Options, run, run_sources
 
 
 class Parser(argparse.ArgumentParser):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
     def error(self, message: str) -> NoReturn:
         raise OcrError(message)
 
 
 def _common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Print the final result as JSON (default: key=value; does not save OCR JSON)",
+    )
+    parser.add_argument(
+        "--full-output",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Include every skipped file as well as failures and results (text or --json)",
+    )
     parser.add_argument(
         "--config",
         type=Path,
@@ -50,9 +65,9 @@ def _ocr_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--state-dir", help="Persistent job/lock directory")
     output_mode = parser.add_mutually_exclusive_group()
     output_mode.add_argument(
-        "--json",
+        "--save-json",
         action="store_true",
-        help="Also save OCR text JSON (default: PDF only)",
+        help="Also save OCR text JSON (default: PDF only; independent of --json display)",
     )
     output_mode.add_argument(
         "--only-json",
@@ -91,7 +106,10 @@ def _ocr_options(parser: argparse.ArgumentParser) -> None:
 def parser() -> Parser:
     root = Parser(
         description="Create searchable PDFs with Azure prebuilt-read. Normal OCR uploads "
-        "PDFs and writes results; --dry-run is local and read-only."
+        "PDFs and writes results; --dry-run is local and read-only. "
+        "Results use key=value by default, "
+        "or --json for machine processing. Logs go to stderr. Exit: 0 success, 1 partial "
+        "failure/unexpected error, 2 argument/config/file error, 130 interrupted."
     )
     root.add_argument("--version", action="version", version=__version__)
     _common(root)
@@ -103,7 +121,6 @@ def parser() -> Parser:
         "list", help="List merged non-secret settings and winning sources as key=value lines"
     )
     _common(listing)
-    listing.add_argument("--json", action="store_true", help="Print the full configuration as JSON")
     init = sub.add_parser("init", help="Create the packaged example in the user settings directory")
     _common(init)
     init.add_argument("path", nargs="?", type=Path)
@@ -209,25 +226,60 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         dry_run=args.dry_run,
         overwrite=args.overwrite,
         redo_ocr=args.redo_ocr,
-        json=args.json,
+        json=args.save_json,
         only_json=args.only_json,
         json_output=getattr(args, "json_output", None),
     )
     if args.command == "run":
         return run_sources(config, options, args.source)
-    if args.json_output and not (args.json or args.only_json):
-        raise OcrError("--json-output requires --json or --only-json")
+    if args.json_output and not (args.save_json or args.only_json):
+        raise OcrError("--json-output requires --save-json or --only-json")
     if args.output is None and not (args.only_json and args.json_output):
         raise OcrError("convert requires --output, or --json-output with --only-json")
     output = args.output or args.json_output.with_suffix(".pdf")
     return run([(args.input, output)], config, options)
 
 
+def _error_result(exc: BaseException, args: argparse.Namespace | None) -> dict[str, Any]:
+    if isinstance(exc, KeyboardInterrupt):
+        result: dict[str, Any] = {"status": "interrupted"}
+    else:
+        message = (
+            str(exc)
+            if isinstance(exc, OcrError)
+            else "File access failed; check paths/permissions"
+            if isinstance(exc, OSError)
+            else "Unexpected processing error; use --verbose for diagnostics"
+        )
+        result = {"status": "failed", "error": message}
+    path = getattr(exc, "path", None) or getattr(exc, "filename", None)
+    if args is not None:
+        for field in ("input", "output", "json_output", "config"):
+            value = getattr(args, field, None)
+            if value is not None:
+                result["config_path" if field == "config" else field] = str(
+                    value.expanduser().absolute()
+                )
+        if args.command == "config" and args.config_command == "init":
+            path = path or str((args.path or user_config_path()).expanduser().absolute())
+        if getattr(args, "source", None) is not None:
+            result["source_id"] = args.source
+    path = path or result.get("input") or result.get("config_path")
+    if path is not None:
+        result["path"] = str(path)
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # Preserve the requested format even if argparse fails; -- terminates options.
+    option_tokens = argv[: argv.index("--")] if "--" in argv else argv
+    json_output = any(token.partition("=")[0] == "--json" for token in option_tokens)
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     logger = configure_logging(quiet=False, verbose=False)
+    args = None
     try:
         args = parser().parse_args(argv)
         if getattr(args, "quiet", False) and getattr(args, "verbose", False):
@@ -239,27 +291,30 @@ def main(argv: list[str] | None = None) -> int:
         result = execute(args)
         counts = result.get("counts", {})
         failed = sum(counts.get(key, 0) for key in ("failed", "needs_review"))
-        listing = args.command == "config" and args.config_command == "list"
-        if listing and not args.json:
-            print("\n".join(config_lines(result)))
-        else:
-            print(json.dumps(result, ensure_ascii=False, indent=2))
+        emit(
+            public_result(result, full_output=getattr(args, "full_output", False)),
+            json_output=json_output,
+        )
         if failed:
             logger.error("Finished with %s file(s) requiring attention", failed)
             return 1
-        if listing:
+        if args.command == "config" and args.config_command == "list":
             logger.info("Showing resolved configuration")
         else:
             log_success(logger, "Completed %s", args.command)
         return 0
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
         logger.error("Interrupted; inspect outputs before rerunning")
-        print(json.dumps({"status": "interrupted"}))
+        emit(_error_result(exc, args), json_output=json_output)
         return 130
     except (OcrError, OSError) as exc:
-        message = (
-            str(exc) if isinstance(exc, OcrError) else "File access failed; check paths/permissions"
-        )
-        logger.error("%s", message)
-        print(json.dumps({"status": "failed", "error": message}, ensure_ascii=False))
+        result = _error_result(exc, args)
+        logger.error("%s", result["error"])
+        emit(result, json_output=json_output)
         return 2
+    except Exception as exc:
+        result = _error_result(exc, args)
+        logger.error("%s", result["error"])
+        logger.debug("Exception type: %s", type(exc).__name__)
+        emit(result, json_output=json_output)
+        return 1

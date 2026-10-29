@@ -281,7 +281,7 @@ def test_cli_source_option_and_review_exit_code(tmp_path, capsys):
             }
         )
     )
-    assert main(["run", "--config", str(path), "--source", "receipts", "--dry-run"]) == 1
+    assert main(["--json", "run", "--config", str(path), "--source", "receipts", "--dry-run"]) == 1
     assert json.loads(capsys.readouterr().out)["counts"]["needs_review"] == 1
     assert source.exists() and not config.state_dir.exists()
     assert main(["run", "--config", str(path), "--source", "unknown", "--dry-run"]) == 2

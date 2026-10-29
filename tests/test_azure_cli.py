@@ -120,6 +120,7 @@ def test_cli_end_to_end(config, monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(module, "AzureRead", lambda cfg: provider)
     result = main(
         [
+            "--json",
             "convert",
             str(source),
             "--output",
@@ -140,7 +141,7 @@ def test_cli_end_to_end(config, monkeypatch, capsys, tmp_path):
 
 
 def test_cli_errors_are_json(capsys):
-    assert main(["convert"]) == 2
+    assert main(["--json", "convert"]) == 2
     result = capsys.readouterr()
     assert json.loads(result.out)["status"] == "failed"
     assert "[ERROR]" in result.err
@@ -187,13 +188,13 @@ def test_help(argv):
     ],
 )
 def test_removed_folder_options_and_missing_output_rejected(argv, capsys):
-    assert main(argv) == 2
+    assert main(["--json", *argv]) == 2
     assert json.loads(capsys.readouterr().out)["status"] == "failed"
 
 
 @pytest.mark.parametrize("option", ["--recursive", "--no-recursive"])
 def test_recursive_is_configured_per_source_not_by_cli(option, capsys):
-    assert main(["run", option]) == 2
+    assert main(["--json", "run", option]) == 2
     assert json.loads(capsys.readouterr().out)["status"] == "failed"
 
 

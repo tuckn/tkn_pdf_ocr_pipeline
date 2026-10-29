@@ -9,7 +9,7 @@
 
 Wordなどから出力された通常の文字があるページは、OCRせず保持します。これらが混在するPDFでは、対象の画像ページだけをOCRします。名前付きキューでは、OCRが不要な検索可能PDFも、そのまま後段へ引き継ぎます。
 
-認識した全文・ページ別の行・Azureの解析結果をJSONファイルにも保存できます。既定ではPDFだけを出力し、JSONも保存する場合は `--json`、JSONだけの場合は `--only-json` を指定します。
+認識した全文・ページ別の行・Azureの解析結果をJSONファイルにも保存できます。既定ではPDFだけを出力し、JSONも保存する場合は `--save-json`、JSONだけの場合は `--only-json` を指定します。
 
 文字認識には **Azure Document Intelligence** のReadモデル（`prebuilt-read`）を使います。
 
@@ -238,18 +238,18 @@ tkn-pdf-ocr run --source receipts
 | 指定            | 保存するファイル                                           |
 | --------------- | ---------------------------------------------------------- |
 | なし            | 検索可能PDFのみ。                                          |
-| `--json`      | 検索可能PDFとOCR結果のJSON。                               |
+| `--save-json`      | 検索可能PDFとOCR結果のJSON。                               |
 | `--only-json` | OCR結果のJSONのみ。検索可能PDFの生成・取得は要求しません。 |
 
-`--json` と `--only-json` は同時には指定できません。
+`--save-json` と `--only-json` は同時には指定できません。
 JSON出力は実行時のオプションで選びます。`json_output_dir` を設定しただけではJSONは保存しません。
 
 ```shell
 # PDFとJSONの保存予定を確認する
-tkn-pdf-ocr run --source receipts --json --dry-run
+tkn-pdf-ocr run --source receipts --save-json --dry-run
 
 # PDFとJSONを保存する
-tkn-pdf-ocr run --source receipts --json
+tkn-pdf-ocr run --source receipts --save-json
 
 # JSONだけを保存する
 tkn-pdf-ocr run --source receipts --only-json
@@ -263,10 +263,10 @@ PDFと同じ出力名の拡張子を `.json` に変えます。例えば `output
 
 ```shell
 # PDFの隣に document-searchable.json も保存する
-tkn-pdf-ocr convert "C:/path/to/document.pdf" --output "C:/path/to/document-searchable.pdf" --json
+tkn-pdf-ocr convert "C:/path/to/document.pdf" --output "C:/path/to/document-searchable.pdf" --save-json
 
 # PDFとは別の場所へJSONを保存する
-tkn-pdf-ocr convert "C:/path/to/document.pdf" --output "C:/path/to/document-searchable.pdf" --json --json-output "C:/path/to/ocrJson/document.json"
+tkn-pdf-ocr convert "C:/path/to/document.pdf" --output "C:/path/to/document-searchable.pdf" --save-json --json-output "C:/path/to/ocrJson/document.json"
 
 # 元PDFを保持してJSONだけを保存する
 tkn-pdf-ocr convert "C:/path/to/document.pdf" --only-json --json-output "C:/path/to/ocrJson/document.json"
@@ -284,8 +284,8 @@ JSONには `sourceFileName`、元PDFのハッシュ、解析対象ページ、�
 
 AI BuilderのJSONに近い参照先で全文を利用できますが、AI BuilderのAPI応答を完全に再現するものではありません。認識文字や行順は異なる場合があります。
 
-`--json` はPDFのOCRに使う同じAzure解析からJSONを作成します。既存の文字ページとスキャンページが混在するPDFでは、JSONはOCR対象ページのみの場合があります。`analyzed_pages` と `source_pages` で対象範囲を確認できます。
-OCR対象ページがない検索可能PDFに `--json` を付けると、JSON用に全ページをAzureへ送信し、PDFはそのままコピーします。
+`--save-json` はPDFのOCRに使う同じAzure解析からJSONを作成します。既存の文字ページとスキャンページが混在するPDFでは、JSONはOCR対象ページのみの場合があります。`analyzed_pages` と `source_pages` で対象範囲を確認できます。
+OCR対象ページがない検索可能PDFに `--save-json` を付けると、JSON用に全ページをAzureへ送信し、PDFはそのままコピーします。
 `--only-json` は、既に文字があるPDFも含めて全ページをAzureへ送信して解析します。PDFからのローカル文字抽出ではありません。`--dry-run` を付けた場合は送信・保存しません。
 
 JSON出力を後から有効にした場合、入力が残っていても同名のPDF出力があればスキップします。保持しているPDFからJSONだけを作る場合は `convert --only-json` を使えます。既存JSONも既定ではスキップし、置き換えるには `--overwrite` が必要です。
@@ -376,7 +376,7 @@ Windowsのタスクスケジューラでは、次の内容を設定します。
 | 項目             | 設定                                                                                                         |
 | ---------------- | ------------------------------------------------------------------------------------------------------------ |
 | プログラム       | `Get-Command tkn-pdf-ocr` で確認した `tkn-pdf-ocr.exe` のパス。                                          |
-| 引数             | `run`。対象を絞る場合は `run --source receipts`、JSONも保存する場合は `run --source receipts --json`。 |
+| 引数             | `run`。対象を絞る場合は `run --source receipts`、JSONも保存する場合は `run --source receipts --save-json`。 |
 | 開始するフォルダ | 手動実行で使用した作業フォルダ。                                                                             |
 | 実行ユーザー     | 手動実行と同じ設定・認証を利用できるWindowsユーザー。                                                        |
 | 多重起動         | 前回の処理が続いている場合は、新しい処理を開始しない設定。                                                   |
@@ -387,15 +387,37 @@ PCの電源が入り、スリープしていない間に実行できます。
 
 ## 入力削除と途中停止
 
-`after_success: delete` は、要求した出力の保存とハッシュ検証が終わり、入力が変わっていないことを再確認してから入力を削除します。`--json` ではPDFとJSONの両方、`--only-json` ではJSONを確認します。削除はごみ箱を経由しません。OneDriveへの同期完了は確認しません。
+`after_success: delete` は、要求した出力の保存とハッシュ検証が終わり、入力が変わっていないことを再確認してから入力を削除します。`--save-json` ではPDFとJSONの両方、`--only-json` ではJSONを確認します。削除はごみ箱を経由しません。OneDriveへの同期完了は確認しません。
 
 入力削除に失敗した場合は `needs_review` となり、出力と入力が残ります。次回は同名出力があるためスキップします。入力の確認と整理は手動で行ってください。
 
 ## 実行結果の読み方
 
-進捗やエラーはコンソールの標準エラーへ、最終結果は標準出力へJSONで表示します。`config list` は既定で `key=value` 形式、`config list --json` はJSON形式です。設定一覧のログは `[INFO] Showing resolved configuration` です。
+全コマンドの結果は、既定で1行1項目の `key=value` 一覧を標準出力へ表示します。入れ子は `.`、配列は `[0]`、空配列・空mappingは `[]`・`{}`、真偽値は `true`・`false`、未設定値は `null` です。文字列をJSONの引用符で囲まず、Windowsパスは二重エスケープや省略をせずコピーできます。改行・タブなどの制御文字はエスケープします。
+
+`--json` は結果表示だけを、1つの機械処理用JSON documentへ切り替えます。OCR成果物の保存には `--save-json` または `--only-json` を使います。`--json` と `--save-json` は組み合わせられます。
+進捗・警告・診断は標準エラーへ分離します。`--quiet` / `--verbose` はログ量だけを変え、結果は残します。TTY、パイプ、リダイレクトでは出力形式を切り替えません。設定一覧のログは `[INFO] Showing resolved configuration` です。
+
+```powershell
+# 人が結果を見る
+tkn-pdf-ocr run --dry-run
+# 自動処理で結果を解析する（JSONはコマンドの前後に指定可能）
+$result = tkn-pdf-ocr --json run --dry-run | ConvertFrom-Json
+$exitCode = $LASTEXITCODE
+$result.counts
+# OCRのJSONも保存し、実行結果をJSONとして受け取る
+tkn-pdf-ocr run --save-json --json
+# 全対象の詳細を含める（出力形式とは独立）
+tkn-pdf-ocr run --dry-run --full-output --json
+```
+
+複数ファイルの処理では、既定でskipの個別詳細を省略し、`counts.skipped` と `skipped_reasons` にまとめます。`omitted_files` は省略件数、`details_hint` は詳細の確認方法です。失敗・要確認・変更・予定の対象は `files` に残り、`source` / `output` と `reason` / `error` を別項目で確認できます。1件の結果はskipでも省略しません。
+`--full-output` は通常一覧・JSONのどちらでも全件を表示します。通常実行で保存した `run_report` には、表示で省略したskipも含む全結果が残ります。dry-runではレポートを保存しないため、必要なら最初から `--full-output` を指定してください。
+
+引数・設定・実行時エラー、一部失敗、中断でも、可能な限り選択形式で結果を返します。対象が分かるトップレベルのエラーは `path`、`input`、`output`、`config_path` などにパスを表示します。`--help` と `--version` は通常の案内表示です。
+CLIの機械処理用キー・status・型・終了コードと使用例は[CLI出力仕様](docs/reference/cli-output.md)を参照してください。
 この実行結果のJSONと、ファイル保存するOCR本文のJSONは別です。
-`run` と `convert` の結果には、次の件数が含まれます。件数は入力PDF単位です。`--json` でPDFとJSONを保存しても1件、`--only-json` ではJSONの保存結果として数えます。
+`run` と `convert` の結果には、次の件数が含まれます。件数は入力PDF単位です。`--save-json` でPDFとJSONを保存しても1件、`--only-json` ではJSONの保存結果として数えます。
 
 | 項目             | 意味                                                                          |
 | ---------------- | ----------------------------------------------------------------------------- |
@@ -413,7 +435,7 @@ PCの電源が入り、スリープしていない間に実行できます。
 `--dry-run` 以外では、実行レポートもファイルに保存します。
 保存先は結果の `run_report` に表示されます。強制終了などでレポートが残らない場合があります。
 
-終了コードは、`0` が正常終了または処理対象なし、`1` が1件以上のファイル失敗・要確認、`2` が引数・設定などのエラー、`130` が中断です。
+終了コードは、`0` が正常終了または処理対象なし、`1` が1件以上のファイル失敗・要確認または想定外エラー、`2` が引数・設定などのエラー、`130` が中断です。
 
 ## コマンド一覧
 
@@ -424,14 +446,14 @@ PCの電源が入り、スリープしていない間に実行できます。
 | 設定ファイルを作る                   | `config init [PATH] [--dry-run] [--force]`           |
 | 有効な設定と取得元を確認する         | `config list [--json]`                                        |
 | 1つのPDFをOCRする                    | `convert INPUT --output OUTPUT`                      |
-| OCR結果をPDFとJSONで保存する         | `run [--source ID] --json`                           |
+| OCR結果をPDFとJSONで保存する         | `run [--source ID] --save-json`                           |
 | OCR結果をJSONだけで保存する          | `run [--source ID] --only-json`                      |
 | 1つのPDFからJSONだけを保存する       | `convert INPUT --only-json --json-output FILE.json`  |
 | `input_dir` のPDFをまとめてOCRする | `run [--source ID]`                                  |
 | PDFのページ数と文字の有無を調べる    | `verify INPUT [--expected-pages N] [--require-text]` |
 
 各コマンドの `--help` でオプションを確認できます。
-共通の `--config PATH`、`--quiet`、`--verbose` はサブコマンドの前後に指定できます。
+共通の `--config PATH`、`--json`、`--full-output`、`--quiet`、`--verbose` はサブコマンドの前後に指定できます。
 `--quiet` は進捗を省いてエラーと結果を表示し、`--verbose` は診断情報を追加します。
 
 ## 設定ファイルと実行レポートの保存先

@@ -113,6 +113,7 @@ def test_cli_only_json_without_pdf_output(config, tmp_path, monkeypatch, capsys)
     monkeypatch.setattr(module, "AzureRead", lambda _config: provider)
     status = main(
         [
+            "--json",
             "convert",
             str(source),
             "--only-json",

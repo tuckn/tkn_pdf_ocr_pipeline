@@ -130,7 +130,7 @@ def test_config_help_and_removed_show(capsys):
     assert caught.value.code == 0
     assert "--json" in capsys.readouterr().out
     assert main(["config", "show"]) == 2
-    assert json.loads(capsys.readouterr().out)["status"] == "failed"
+    assert "status=failed" in capsys.readouterr().out.splitlines()
 
 
 @pytest.mark.parametrize("machine", [False, True])
@@ -143,7 +143,11 @@ def test_listing_invalid_config_keeps_json_error(tmp_path, capsys, machine):
         == 2
     )
     result = capsys.readouterr()
-    assert json.loads(result.out)["status"] == "failed"
+    assert (
+        json.loads(result.out)["status"] == "failed"
+        if machine
+        else "status=failed" in result.out.splitlines()
+    )
     assert "[ERROR]" in result.err and "[SUCCESS]" not in result.err
 
 

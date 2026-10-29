@@ -181,20 +181,24 @@ def resolve_config(
     for path, required in candidates:
         if not path.exists():
             if required:
-                raise OcrError(f"Config file does not exist: {path}")
+                raise OcrError(f"Config file does not exist: {path}", path=path)
             continue
         try:
             mapping = yaml.safe_load(path.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError) as exc:
-            raise OcrError(f"Cannot read YAML config: {path}") from exc
+            raise OcrError(f"Cannot read YAML config: {path}", path=path) from exc
         if not isinstance(mapping, dict):
-            raise OcrError(f"Config must be a mapping: {path}")
+            raise OcrError(f"Config must be a mapping: {path}", path=path)
         version = mapping.pop("schema_version", None)
-        _version(version, str(path))
-        _validate(mapping, defaults, str(path))
-        check = deepcopy(defaults)
-        _merge(check, mapping, {}, str(path))
-        _semantic(check)
+        try:
+            _version(version, str(path))
+            _validate(mapping, defaults, str(path))
+            check = deepcopy(defaults)
+            _merge(check, mapping, {}, str(path))
+            _semantic(check)
+        except OcrError as exc:
+            exc.path = str(path)
+            raise
         _merge(values, mapping, winners, str(path))
         sources.append({"path": str(path), "schema_version": version, "migration": False})
     if overrides:
@@ -291,7 +295,9 @@ def init_config(
     if existing and path.read_bytes() == data:
         return {"status": "unchanged", "path": str(path)}
     if existing and not force:
-        raise OcrError(f"Edited config exists: {path}; use --force to replace it with a backup")
+        raise OcrError(
+            f"Edited config exists: {path}; use --force to replace it with a backup", path=path
+        )
     result: dict[str, Any] = {
         "status": "replaced" if existing else "created",
         "path": str(path),

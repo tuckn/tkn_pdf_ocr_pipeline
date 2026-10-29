@@ -99,8 +99,8 @@ sources disabled is a successful empty run. Individual file failures do not stop
 Top-level `input_dir` / `output_dir` and CLI `--input-dir` / `--output-dir` are not accepted.
 `convert INPUT --output OUTPUT` requires an explicit PDF output unless
 `--only-json --json-output FILE.json` is used. It is independent of named
-queues and always keeps input. `--json` creates a JSON alongside the PDF,
-or at `--json-output FILE.json`. `run --json` and `run --only-json`
+queues and always keeps input. `--save-json` creates a JSON alongside the PDF,
+or at `--json-output FILE.json`. `run --save-json` and `run --only-json`
 use `json_output_dir` for each source. Omission creates no JSON.
 `--dry-run` does not save either output or call Azure.
 

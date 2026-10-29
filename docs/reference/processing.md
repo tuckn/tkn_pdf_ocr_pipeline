@@ -25,7 +25,7 @@ Configuration and folder-layout errors stop the command before file processing.
 
 ## Optional OCR JSON
 
-`--json` saves a `.json` file with the searchable PDF. It uses the
+`--save-json` saves a `.json` file with the searchable PDF. It uses the
 same Azure analysis request and selected OCR pages. If the input has no eligible
 OCR pages, a named source sends the full PDF for text analysis and copies the
 existing searchable PDF. For a mixed PDF, `analyzed_pages` lists the
@@ -58,7 +58,7 @@ Public Azure resource origin: `https://<resource-name>.cognitiveservices.azure.c
 The operation URL must match the configured origin, model path and API version.
 Redirects are disabled, so credentials are not forwarded to a different origin.
 Credentials and raw Azure error bodies/OCR text are excluded from application logs.
-Analysis JSON is used for page/word validation. When `--json` or
+Analysis JSON is used for page/word validation. When `--save-json` or
 `--only-json` is requested, it is saved in the source-aligned OCR JSON
 file. Without either option, the analysis remains transient.
 `--only-json` omits the PDF output request and downloads no searchable PDF from Azure.
@@ -121,7 +121,7 @@ reading order, selection alignment and image appearance.
 
 ## Implementation boundaries
 
-- `cli.py`: command parsing, UTF-8 results on stdout (JSON or `config list` entries) and logs on stderr.
+- `cli.py`: command parsing, UTF-8 results on stdout (`key=value` by default or explicit `--json`) and logs on stderr. See [CLI output](cli-output.md).
 - `config.py`: independently validated configuration layers and packaged defaults.
 - `pipeline.py`: page selection, locks, validation and publication.
 - `azure.py`: Azure authentication and HTTP; mockable without live credentials.
@@ -191,8 +191,8 @@ Single-file `convert` retains input. Named sources default to `keep`;
 ## Named queue delivery
 
 Each named source processes its current inputs independently of earlier results.
-The source ID selects the queue and labels the run report; changing it does not
-require any migration. An existing requested output is skipped by default,
+The source ID selects the queue and labels the run report.
+An existing requested output is skipped by default,
 including when an earlier run created it. If a downstream process moves the output
 while the input remains, a later run may produce it again.
 

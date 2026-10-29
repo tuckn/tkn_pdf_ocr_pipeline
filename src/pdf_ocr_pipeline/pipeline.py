@@ -54,12 +54,12 @@ def discover(config: Config) -> list[tuple[Path, Path]]:
         raise OcrError("Select a configured source with input_dir and output_dir")
     root = config.input_dir
     if not root.is_dir():
-        raise OcrError(f"Input directory does not exist: {root}")
+        raise OcrError(f"Input directory does not exist: {root}", path=root)
     validate_roots(config, root, config.output_dir)
     paths: list[Path] = []
 
     def walk_error(error: OSError) -> None:
-        raise OcrError(f"Cannot enumerate input directory: {error.filename}")
+        raise OcrError(f"Cannot enumerate input directory: {error.filename}", path=error.filename)
 
     for folder, dirs, names in os.walk(root, followlinks=False, onerror=walk_error):
         dirs[:] = (

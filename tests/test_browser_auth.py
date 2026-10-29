@@ -181,7 +181,7 @@ def test_login_dry_run_and_config_list_do_not_touch_auth(browser_config, monkeyp
     path.parent.mkdir()
     path.write_text('schema_version: "3.0.0"\nazure:\n  endpoint: https://example.com\n')
     before = sorted(Path.cwd().rglob("*"))
-    assert main(["auth", "login", "--dry-run"]) == 0
+    assert main(["--json", "auth", "login", "--dry-run"]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "planned"
     assert main(["config", "list", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["settings"]["azure"]["auth_mode"] == "browser"
@@ -194,7 +194,7 @@ def test_login_reauthenticate_without_pdf_requests(browser_config, monkeypatch, 
     path.parent.mkdir()
     path.write_text('schema_version: "3.0.0"\nazure:\n  endpoint: https://example.com\n')
     for args in (["auth", "login"], ["auth", "login"], ["auth", "login", "--reauthenticate"]):
-        assert main(args) == 0
+        assert main(["--json", *args]) == 0
         result = json.loads(capsys.readouterr().out)
         assert result["status"] == "authenticated"
         assert result["resource_access_checked"] is False
